@@ -39,7 +39,7 @@ android {
     androidResources {
         // Keep the rootfs asset uncompressed so the installer can copy it
         // by stream without depending on AssetFileDescriptor behaviour.
-        noCompress += "tar.gz"
+        noCompress += "bundle"
     }
     packaging {
         resources {
