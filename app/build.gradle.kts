@@ -12,8 +12,8 @@ android {
         applicationId = "com.novainc.agt"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "1.0.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -36,6 +36,11 @@ android {
     buildFeatures {
         compose = true
     }
+    androidResources {
+        // Keep the rootfs asset uncompressed so the installer can copy it
+        // by stream without depending on AssetFileDescriptor behaviour.
+        noCompress += "tar.gz"
+    }
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
@@ -53,6 +58,15 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.4")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+
+    // HTTP for the Supabase and Firebase legs and rootfs download.
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    // JSON for the store, jobs and Supabase payloads (works in unit tests too).
+    implementation("com.google.code.gson:gson:2.10.1")
+    // Tar extraction of the rootfs, snapshots and bundles (pure Java).
+    implementation("org.apache.commons:commons-compress:1.26.1")
+    // Ed25519 device identity and signed jobs (pure Java, all API levels).
+    implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
