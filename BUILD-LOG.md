@@ -157,3 +157,41 @@ below once the run lands.
 - Phone-side acceptance (install on the Redmi, run a Node and a Python
   server inside AGT, restart the app, watch the supervisor restore them,
   deploy from this VM) still needs the owner's hands and the paired phone.
+
+## Finishing round: wake lock, widget, real-time alerts (2026-11-15)
+
+Owner asked for three finishing features after the complete build; all
+three are in, built, and CI-verified (run 43738218110, head 9379f322,
+14 unit tests, 0 failures).
+
+- Wake lock: AgtService now acquires a PARTIAL_WAKE_LOCK
+  (tag AGT::HostWakeLock) on start and holds it for the whole service
+  life, released exactly once in onDestroy. The screen can lock; the
+  CPU keeps serving. State is exposed as AgtService.wakeLockHeld and
+  written into every heartbeat line.
+- Home screen widget (ui/AgtWidget): matte black, gold wordmark,
+  emerald/danger/dim status light, in the approved design language.
+  Shows service state, running deployments, tunnel state, hostname,
+  wake lock state, and update time. Reads the store directly (truth
+  even when the service is stopped), refreshed by the service on every
+  30s heartbeat plus the system 30 min backstop. Tap opens the app.
+- Real-time alerts (core/AlertNotifier, high importance channel
+  agt_alerts): the supervisor fires on deployment down, back up after
+  crash restart, and stopped with auto-restart off; the runtime fires
+  on tunnel down and tunnel back up; Phoenix can push an alert through
+  the Firebase doorbell node /agt/hosts/<id>/alert.json
+  ({"at","title","message"}) and it lands as a phone notification.
+  Local-first by design: the phone is the server, so it is the first
+  to know. True FCM push still needs the app registered in the
+  Firebase console (google-services.json) plus the Phoenix token
+  minter; the RTDB alert node covers the same path today.
+
+Also fixed in this round: the bundled rootfs rides as
+assets/debian-bookworm-agt-arm64.bundle (101,060,887 bytes, sha256
+cf221b91bfac1021ea7861b821af94619bd29c60c4edd5ac57321d0602b7d05d,
+verified byte-identical inside the final APK), because aapt silently
+decompressed the .tar.gz asset and stripped its extension, which
+would have broken the bundled install path.
+
+Final APK: 154,407,182 bytes, sha256
+24da8030851f15e850be096911ee23b44e06d92c7a43515c80158fed3ccb2455.
