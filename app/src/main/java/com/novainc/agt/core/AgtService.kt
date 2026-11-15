@@ -30,8 +30,10 @@ import kotlinx.coroutines.launch
  *
  * It is not tied to any Activity: it keeps running with the screen locked,
  * in the background, until the owner stops it or Android itself is killed
- * and restarted by the boot receiver. Every 30 seconds it writes a
- * heartbeat line to the app-private log that the Console screen reads.
+ * and restarted by the boot receiver. On start it brings up the whole
+ * runtime: the supervisor restores deployments, the three legs connect,
+ * and the agent job engine starts polling. Every 30 seconds it writes a
+ * heartbeat line to the app-private log that the Home screen reads.
  */
 class AgtService : Service() {
 
@@ -54,14 +56,19 @@ class AgtService : Service() {
             _running.value = true
             _serviceUptimeBaseMs.value = startedAtMs
             HeartbeatLog.append(applicationContext, "service started")
+            AgtRuntime.get(applicationContext).startAll()
             heartbeatJob = scope.launch {
                 var beat = 0
                 while (isActive) {
                     beat += 1
                     val upSec = (SystemClock.elapsedRealtime() - startedAtMs) / 1000
+                    val runtime = AgtRuntime.get(applicationContext)
+                    val legs = "tunnel=${runtime.tunnel.state.value} " +
+                        "firebase=${runtime.firebase.state.value} " +
+                        "supabase=${if (runtime.supabase.configured) "ready" else "not-configured"}"
                     HeartbeatLog.append(
                         applicationContext,
-                        "heartbeat #$beat  uptime ${upSec}s  link ${networkMonitor?.reconnector?.state?.value}"
+                        "heartbeat #$beat  uptime ${upSec}s  link ${networkMonitor?.reconnector?.state?.value}  $legs"
                     )
                     delay(HEARTBEAT_MS)
                 }
@@ -73,6 +80,7 @@ class AgtService : Service() {
     override fun onDestroy() {
         HeartbeatLog.append(applicationContext, "service stopped")
         _running.value = false
+        AgtRuntime.get(applicationContext).stopAll()
         networkMonitor?.stop()
         networkMonitor = null
         network = null
