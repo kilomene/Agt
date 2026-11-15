@@ -42,6 +42,11 @@ class JobEngine(
      * the runtime: (kind, title, text). */
     var onJobEvent: ((kind: String, title: String, text: String) -> Unit)? = null
 
+    /** Fired the moment a firebase_token job has saved the new key,
+     * so the Firebase leg applies it instantly instead of noticing
+     * it on a later poll. Wired by AgtRuntime. */
+    var onFirebaseTokenSaved: (() -> Unit)? = null
+
     private val pollRequested = java.util.concurrent.atomic.AtomicBoolean(false)
 
     /** Wake the poll loop NOW instead of waiting out the 15 second
@@ -209,6 +214,7 @@ class JobEngine(
                 val token = payload.get("token")?.asString ?: return fail("token missing")
                 val settings = store.loadSettings()
                 store.saveSettings(settings.copy(firebaseToken = token))
+                onFirebaseTokenSaved?.invoke()
                 JsonObject().apply { addProperty("saved", true) }
             }
             else -> fail("unknown job kind $kind")

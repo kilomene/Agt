@@ -85,7 +85,7 @@ class AgtRuntime private constructor(private val context: Context) {
             addProperty("fcmToken", store.loadSettings().fcmToken)
             addProperty("linuxReady", proot.isInstalled())
             addProperty("appVersion", com.novainc.agt.BuildConfig.VERSION_NAME)
-            addProperty("firebaseKeySet", store.loadSettings().firebaseToken.isNotEmpty())
+            addProperty("firebaseKeySet", firebase.hasUsableKey())
             addProperty("deployments", store.loadDeployments().size)
             addProperty("running", store.loadDeployments().count { it.status == "running" })
         }
@@ -194,6 +194,10 @@ class AgtRuntime private constructor(private val context: Context) {
             installLinux()
         }
         refreshFcmToken()
+        // A fresh Firebase key applies the instant its job lands:
+        // JobEngine pokes the leg, the leg reconnects with the new
+        // key in the same second.
+        jobEngine.onFirebaseTokenSaved = { firebase.refreshNow() }
         firebase.onWake = { scope.launch { pollJobsOnce() } }
         firebase.start(scope, deviceId()) { telemetryJson() }
         jobEngine.hostId = hostId

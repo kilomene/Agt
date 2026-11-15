@@ -29,6 +29,13 @@ import java.util.concurrent.TimeUnit
  * baked into the build, so the token lands on its own with no pairing
  * and nothing for the owner to set up. Until it arrives the leg
  * reports NOT_CONFIGURED and the doorbell falls back to the poll.
+ *
+ * A custom token dies 1 hour after it is minted. Phoenix runs an
+ * always-on keeper that sends a fresh token well before that, and
+ * JobEngine pokes refreshNow() the moment a new token is saved, so
+ * the leg applies it instantly. A stored token whose own expiry has
+ * passed is treated as no token at all: the leg waits for the fresh
+ * one instead of failing against RTDB with a dead key.
  */
 class FirebaseLeg(private val store: AgtStore) {
     enum class State { OFF, NOT_CONFIGURED, CONNECTED, ERROR }
@@ -63,6 +70,13 @@ class FirebaseLeg(private val store: AgtStore) {
     @Volatile private var idToken: String = ""
     @Volatile private var idTokenExpiryMs: Long = 0
 
+    // Start parameters, kept so refreshNow() can restart the loop the
+    // instant a fresh token is saved by JobEngine.
+    private var startScope: CoroutineScope? = null
+    private var startDeviceId: String = ""
+    private var startTelemetry: (() -> JsonObject)? = null
+    @Volatile private var lastCustomToken: String = ""
+
     /** The stored token is a Firebase custom token minted by Phoenix.
      * RTDB REST wants an ID token, so exchange the custom token at the
      * Identity Toolkit endpoint (cached for 50 minutes). If the exchange
@@ -94,14 +108,25 @@ class FirebaseLeg(private val store: AgtStore) {
     }
 
     fun start(scope: CoroutineScope, deviceId: String, telemetry: () -> JsonObject) {
+        startScope = scope
+        startDeviceId = deviceId
+        startTelemetry = telemetry
         stop()
         loop = scope.launch(Dispatchers.IO) {
             while (isActive) {
                 val custom = store.loadSettings().firebaseToken
-                if (custom.isBlank()) {
+                if (custom != lastCustomToken) {
+                    // A fresh key landed: drop the cached ID token so
+                    // the next exchange uses the new key, not the old.
+                    lastCustomToken = custom
+                    idToken = ""
+                    idTokenExpiryMs = 0
+                }
+                val expiry = if (custom.isBlank()) null else tokenExpiryMs(custom)
+                if (custom.isBlank() || (expiry != null && System.currentTimeMillis() > expiry)) {
                     _state.value = State.NOT_CONFIGURED
                     _detail.value = "Key on its way from Phoenix. It lands on its own, nothing to set up."
-                    delay(30_000)
+                    delay(2_000)
                     continue
                 }
                 try {
@@ -127,6 +152,29 @@ class FirebaseLeg(private val store: AgtStore) {
         loop = null
         _state.value = State.OFF
         _detail.value = ""
+    }
+
+    /** Restart the loop right now. Called by JobEngine the moment a
+     * fresh firebase_token job saves a new key, so the leg connects
+     * with it instantly instead of waiting out a poll interval. */
+    fun refreshNow() {
+        val scope = startScope ?: return
+        val telemetry = startTelemetry ?: return
+        if (startDeviceId.isEmpty()) return
+        start(scope, startDeviceId, telemetry)
+    }
+
+    /** True only while the leg holds a key that is actually usable:
+     * a token is stored, its own expiry has not passed, and the last
+     * presence cycle connected. Telemetry reports this as
+     * firebaseKeySet, so Phoenix's keeper mints the moment it turns
+     * false instead of trusting that a token string merely exists. */
+    fun hasUsableKey(): Boolean {
+        val custom = store.loadSettings().firebaseToken
+        if (custom.isBlank()) return false
+        val expiry = tokenExpiryMs(custom)
+        if (expiry != null && System.currentTimeMillis() > expiry) return false
+        return _state.value == State.CONNECTED
     }
 
     private fun writePresence(deviceId: String, token: String, telemetry: JsonObject) {
@@ -181,6 +229,26 @@ class FirebaseLeg(private val store: AgtStore) {
     data class Alert(val at: Long, val title: String, val message: String, val kind: String = "alert")
 
     companion object {
+        /** The expiry instant (epoch millis) carried inside a Firebase
+         * custom token, read from its JWT payload without verifying
+         * the signature: the leg only needs to know when the key dies,
+         * authenticity is JobEngine's job. Null for anything that is
+         * not a JWT with an exp claim. Pure and unit tested. */
+        fun tokenExpiryMs(jwt: String): Long? {
+            return try {
+                val parts = jwt.split(".")
+                if (parts.size != 3) return null
+                var seg = parts[1].replace('-', '+').replace('_', '/')
+                while (seg.length % 4 != 0) seg += "="
+                val payload = String(java.util.Base64.getDecoder().decode(seg), Charsets.UTF_8)
+                val obj = com.google.gson.JsonParser.parseString(payload).asJsonObject
+                val exp = obj.get("exp")?.takeIf { it.isJsonPrimitive }?.asLong ?: return null
+                exp * 1000
+            } catch (e: Exception) {
+                null
+            }
+        }
+
         /** Parse an alert node body; null for empty or malformed input.
          * Pure and unit tested: a bad node must never crash the leg. */
         fun parseAlert(text: String): Alert? {

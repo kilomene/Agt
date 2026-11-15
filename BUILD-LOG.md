@@ -443,10 +443,54 @@ notifications and alerts, realtime instant everything.
   close). No emoji, no stock glyphs, the standing rule.
 - Tests: watchdog interval assertion updated to 300000; AgtFormatTest
   adds uptime-short, relative-age, secret-mask, and slug/subdomain
-  tests. Suite is 38 tests.
+  tests. Suite is 37 tests.
 - Honest residue, stated before shipping: the subdomain shown on the
   cards is the design's address form (name.agt.novamail.store),
   derived from the deployment name. Per-deployment subdomain routing
   through the tunnel is not wired yet; today every deployment rides
   the one tunnel hostname and its own port. Wiring wildcard routing
   is a separate step on the owner's word.
+
+## Instant Firebase wiring round (2026-11-15, v1.6.0)
+
+Owner's ruling, in his words: everything wired together inside the
+code, working instantly the moment the app installs and launches,
+and his instant realtime law over every mechanism (watchdog, crons,
+heartbeat, background, foreground, wake locks). Reading the v1.5.0
+leg honestly found two defects in the Firebase key path:
+
+1. The key was delivered by a cron watcher that only ticked every
+   2 minutes, so a fresh install could wait minutes for its key.
+2. A Firebase custom token dies 1 hour after it is minted, and
+   nothing anywhere refreshed it: the leg would have failed against
+   RTDB forever about an hour after the key finally landed, while
+   telemetry kept claiming a key was set because it only checked
+   that a token string existed.
+
+Fixes, all in the wiring, no UI change at all:
+
+- Phoenix side: the cron watcher is retired. An always-on keeper
+  daemon (systemd service agt-firebase-keeper) polls the phone's
+  Supabase host row every 2 seconds and mints plus sends a fresh
+  signed firebase_token job the moment the phone reports in without
+  a usable key, re-mints every 40 minutes while the phone is active
+  so the phone always holds a key with at least about 20 minutes of
+  life, and replaces an undelivered queued key job older than
+  30 minutes with a fresh mint. A cron guard keeps the keeper itself
+  alive across VM replacements and reports DELIVERED or GIVE_UP
+  once. Proven end to end against a synthetic host before install:
+  key job landed, claims correct (uid, 3600s lifetime), in-flight
+  guard held, delivery confirmation recorded.
+- JobEngine: a new onFirebaseTokenSaved hook fires the moment a
+  firebase_token job saves its key.
+- FirebaseLeg: AgtRuntime wires that hook to refreshNow(), so the
+  leg restarts and connects with the new key in the same second.
+  The not-configured recheck drops from 30s to 2s. The leg now
+  reads the expiry inside the stored token (tokenExpiryMs, unit
+  tested): a dead key is treated as no key, never as an RTDB
+  failure, and a changed key drops the cached ID token so the next
+  exchange uses the new key.
+- Telemetry: firebaseKeySet now means a usable key (stored, not
+  expired, leg connected), which is the signal the keeper mints on.
+- Tests: FirebaseTokenExpiryTest adds 4 tests (expiry read, past
+  expiry, missing exp, malformed tokens). Suite is 41 tests.
