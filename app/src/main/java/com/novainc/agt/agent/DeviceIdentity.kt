@@ -2,6 +2,8 @@ package com.novainc.agt.agent
 
 import android.content.Context
 import com.novainc.agt.core.AgtStore
+import org.bouncycastle.asn1.pkcs.PrivateKeyInfo
+import org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters
 import org.bouncycastle.jce.provider.BouncyCastleProvider
 import java.io.File
 import java.security.KeyFactory
@@ -57,9 +59,10 @@ class DeviceIdentity(context: Context, private val store: AgtStore) {
     }
 
     private fun publicFromPrivate(private: PrivateKey): PublicKey {
-        // Derive the public key from the private key bytes (Ed25519 seed).
-        val priv = (private as org.bouncycastle.jcajce.provider.asymmetric.edec.BCEdDSAPrivateKey)
-        return publicKeyFromBytes(priv.publicKeyBytes)
+        // Derive the public key from the private key with the lightweight
+        // Ed25519 API (BCEdDSAPrivateKey exposes no public-key accessor).
+        val privParams = Ed25519PrivateKeyParameters(PrivateKeyInfo.getInstance(private.encoded))
+        return publicKeyFromBytes(privParams.generatePublicKey().encoded)
     }
 
     fun publicKeyBase64(): String =
@@ -81,7 +84,7 @@ class DeviceIdentity(context: Context, private val store: AgtStore) {
         }
 
         /** Build a PublicKey from either form: the 32 raw bytes (what
-         * Phoenix sends, and what Bouncy Castle's publicKeyBytes holds)
+         * Phoenix sends, and what the Ed25519 lightweight API returns)
          * or a full 44-byte X.509 SubjectPublicKeyInfo encoding. */
         fun publicKeyFromBytes(bytes: ByteArray): PublicKey {
             val spki = if (bytes.size == 32) {

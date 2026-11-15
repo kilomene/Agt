@@ -47,7 +47,7 @@ class ProcessSupervisor(
             deploymentId = deployment.id,
             name = deployment.name,
             command = deployment.command,
-            pid = proc.pid(),
+            pid = pidOf(proc),
             startedAt = System.currentTimeMillis(),
             restarts = 0,
             status = "running",
@@ -90,6 +90,24 @@ class ProcessSupervisor(
         running[deploymentId]?.isAlive == true
 
     fun processFor(deploymentId: String): Process? = running[deploymentId]
+
+    /** The host pid of a child process. The Android SDK does not expose
+     * Process.pid(), so read it from the runtime implementation
+     * reflectively; 0 when it cannot be determined. */
+    private fun pidOf(proc: Process): Long {
+        return try {
+            val field = proc.javaClass.getDeclaredField("pid")
+            field.isAccessible = true
+            (field.get(proc) as Number).toLong()
+        } catch (e: Exception) {
+            try {
+                val method = proc.javaClass.getMethod("pid")
+                (method.invoke(proc) as Number).toLong()
+            } catch (e2: Exception) {
+                0L
+            }
+        }
+    }
 
     /** Health: the process is alive, and its port answers when it has one. */
     fun healthy(deployment: Deployment): Boolean {
