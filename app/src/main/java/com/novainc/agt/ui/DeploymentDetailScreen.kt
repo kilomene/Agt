@@ -109,6 +109,7 @@ fun DeploymentDetailScreen(deploymentId: String, onBack: () -> Unit, onOpenConso
             return@Column
         }
         val running = d.status == "running"
+        val proc = process
         AgtCard {
             InfoRow("Subdomain", subdomainOf(d.name), AgtColors.Gold)
             InfoDivider()
@@ -120,8 +121,8 @@ fun DeploymentDetailScreen(deploymentId: String, onBack: () -> Unit, onOpenConso
             InfoDivider()
             InfoRow(
                 "Uptime",
-                (if (running && process != null) formatUptimeShort(nowMs - process.startedAt) else "stopped") +
-                    " · restarts ${process?.restarts ?: 0}",
+                (if (running && proc != null) formatUptimeShort(nowMs - proc.startedAt) else "stopped") +
+                    " · restarts ${proc?.restarts ?: 0}",
                 AgtColors.TextPrimary
             )
         }
