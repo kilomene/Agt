@@ -2,10 +2,9 @@ package com.novainc.agt.agent
 
 import android.content.Context
 import com.novainc.agt.core.AgtStore
+import org.bouncycastle.asn1.ASN1OctetString
 import org.bouncycastle.asn1.pkcs.PrivateKeyInfo
-import org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters
-import org.bouncycastle.crypto.params.Ed25519PublicKeyParameters
-import org.bouncycastle.crypto.signers.Ed25519
+import org.bouncycastle.math.ec.rfc8032.Ed25519
 import org.bouncycastle.jce.provider.BouncyCastleProvider
 import java.io.File
 import java.security.KeyFactory
@@ -61,11 +60,14 @@ class DeviceIdentity(context: Context, private val store: AgtStore) {
     }
 
     private fun publicFromPrivate(private: PrivateKey): PublicKey {
-        // Derive the public key from the private key with the lightweight
-        // Ed25519 API (BCEdDSAPrivateKey exposes no public-key accessor).
-        val privParams = Ed25519PrivateKeyParameters(PrivateKeyInfo.getInstance(private.encoded))
-        val pubBytes = ByteArray(Ed25519PublicKeyParameters.KEY_SIZE)
-        Ed25519.generatePublicKey(privParams.encoded, 0, pubBytes, 0)
+        // Derive the public key from the private key seed with the
+        // low-level RFC 8032 API (BCEdDSAPrivateKey exposes no
+        // public-key accessor). The PKCS8 private key holds the
+        // 32-byte seed inside an octet string.
+        val info = PrivateKeyInfo.getInstance(private.encoded)
+        val seed = (info.parsePrivateKey() as ASN1OctetString).octets
+        val pubBytes = ByteArray(32)
+        Ed25519.generatePublicKey(seed, 0, pubBytes, 0)
         return publicKeyFromBytes(pubBytes)
     }
 
