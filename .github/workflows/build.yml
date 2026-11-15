@@ -23,6 +23,18 @@ jobs:
         with:
           gradle-version: '8.7'
 
+      - name: Stage native binaries and rootfs
+        run: |
+          set -euo pipefail
+          mkdir -p app/src/main/jniLibs/arm64-v8a app/src/main/assets
+          echo "fa10b1a7818c2f5b1dcb5834450570c368c9ecf66d31521509621b95c4538a45  native-binaries/proot-aarch64" | sha256sum -c -
+          echo "abe54a006acf9faf2d19ee9d953cb0d0804e92f59c5382a162e57b84d086f56f  native-binaries/cloudflared-arm64" | sha256sum -c -
+          cp native-binaries/proot-aarch64 app/src/main/jniLibs/arm64-v8a/libproot.so
+          cp native-binaries/cloudflared-arm64 app/src/main/jniLibs/arm64-v8a/libcloudflared.so
+          cat rootfs-parts/debian-bookworm-agt-arm64.tar.gz.part* > app/src/main/assets/debian-bookworm-agt-arm64.tar.gz
+          echo "cf221b91bfac1021ea7861b821af94619bd29c60c4edd5ac57321d0602b7d05d  app/src/main/assets/debian-bookworm-agt-arm64.tar.gz" | sha256sum -c -
+          ls -la app/src/main/jniLibs/arm64-v8a/ app/src/main/assets/
+
       - name: Run unit tests and build the debug APK
         run: gradle :app:testDebugUnitTest :app:assembleDebug --console=plain
 
