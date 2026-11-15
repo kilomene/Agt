@@ -120,8 +120,8 @@ fun LineIcon(kind: IconKind, color: Color, modifier: Modifier = Modifier) {
                     size = androidx.compose.ui.geometry.Size(w * 0.76f, h * 0.3f),
                     style = stroke
                 )
-                drawCircle(color, Offset(w * 0.26f, h * 0.3f), w * 0.045f)
-                drawCircle(color, Offset(w * 0.26f, h * 0.7f), w * 0.045f)
+                drawCircle(color = color, center = Offset(w * 0.26f, h * 0.3f), radius = w * 0.045f)
+                drawCircle(color = color, center = Offset(w * 0.26f, h * 0.7f), radius = w * 0.045f)
             }
             IconKind.Memory -> {
                 drawRect(
@@ -143,7 +143,7 @@ fun LineIcon(kind: IconKind, color: Color, modifier: Modifier = Modifier) {
                 }
             }
             IconKind.Clock -> {
-                drawCircle(color, Offset(w / 2, h / 2), w * 0.42f, style = stroke)
+                drawCircle(color = color, center = Offset(w / 2, h / 2), radius = w * 0.42f, style = stroke)
                 drawLine(color, Offset(w / 2, h / 2), Offset(w / 2, h * 0.24f), strokeWidth = w * 0.07f)
                 drawLine(color, Offset(w / 2, h / 2), Offset(w * 0.68f, h * 0.58f), strokeWidth = w * 0.07f)
             }
