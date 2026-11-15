@@ -52,6 +52,7 @@ data class AgtSettings(
     val tunnelToken: String = "",
     val firebaseToken: String = "",
     val supabaseAnonKey: String = "",
+    val fcmToken: String = "",
     val rootfsVersion: String = "",
     val linuxReady: Boolean = false
 )

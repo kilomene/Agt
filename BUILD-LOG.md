@@ -195,3 +195,58 @@ would have broken the bundled install path.
 
 Final APK: 154,407,182 bytes, sha256
 24da8030851f15e850be096911ee23b44e06d92c7a43515c80158fed3ccb2455.
+
+## FCM round (2026-11-15): real push, secrets in CI, live schema fixed
+
+Owner order: FCM must be real, and the tunnel token and Supabase key
+belong in GitHub repo secrets, injected at build time, not pasted into
+the app by hand. Done in that shape:
+
+- Firebase: the AGT Android app (com.novainc.agt) is registered in
+  project agentlink-84609 through the Firebase Management API using the
+  project service account. App id
+  1:997851914896:android:c8c7e0cab334c28c202e15. The real
+  google-services.json was fetched from the same API.
+- App: Firebase BoM 33.3.0, firebase-messaging and firebase-database,
+  google-services plugin, and a real AgtMessagingService
+  (MESSAGING_EVENT). Notification pushes land through AlertNotifier on
+  the high importance channel; data-only {type: wake} pushes start the
+  host service. onNewToken stores the registration token and publishes
+  it at once; the token also rides every Supabase heartbeat in
+  telemetry.fcmToken, which is the address Phoenix pushes to.
+  FcmPayload resolution is unit tested (5 new tests).
+- Secrets: SUPABASE_ANON_KEY, TUNNEL_TOKEN and GOOGLE_SERVICES_JSON_B64
+  are set as GitHub repo secrets (verified in the secrets list). CI
+  materializes app/google-services.json from the secret (gitignored,
+  never committed) and passes the other two as build env; Gradle writes
+  them into BuildConfig, and AgtConfig reads them from there. Settings
+  entries still override the baked values. The app now works on first
+  launch with nothing to paste.
+- Supabase: the real anon key was read from the dashboard (kilomene1960
+  org, termux-agt project) and proven against PostgREST. That check
+  exposed a real defect: the live hosts and deployments tables are the
+  old Termux-AGT tables, so AGT upserts would have failed on the phone.
+  Migration 002 adds the AGT columns to both tables (device_id with a
+  unique index, public_key, online, telemetry; name, kind, source,
+  config, port) and migration 003 relaxes three legacy NOT NULL columns
+  with no defaults (hosts.token_hash, deployments.project_id,
+  deployments.version). Both applied live. The full app path was then
+  proven with the anon key alone: host upsert, heartbeat patch,
+  deployment upsert, job insert and poll, cleanup deletes, all green.
+- Firebase RTDB: rules gained an agt/hosts/$device section (the owning
+  device, auth.uid equal to the device id, may read and write its own
+  node); the seven AgentLink sections are untouched, and an
+  unauthenticated write probe is denied with 401. FirebaseLeg now
+  exchanges the Phoenix-minted custom token for an ID token at the
+  Identity Toolkit endpoint (cached 50 minutes, direct use as fallback).
+- Phoenix side: agt-phoenix/fcm_send.py sends real FCM HTTP v1 pushes
+  with the service account (by token, or by device id with the token
+  read from Supabase). Its self-test reached Google and got
+  INVALID_ARGUMENT for a bogus token, proving auth, project and
+  endpoint wiring before any phone exists. agt-phoenix/
+  mint_firebase_token.py mints the RTDB custom token and delivers it as
+  a signed firebase_token job; agt_jobs.py now falls back to the stored
+  anon key file so the tooling runs without env setup.
+- Still phone-bound: an FCM push can only land once the app is
+  installed and has registered its token. Everything server-side is
+  built and proven up to that exact boundary.

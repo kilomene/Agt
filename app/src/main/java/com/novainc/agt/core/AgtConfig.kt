@@ -1,16 +1,29 @@
 package com.novainc.agt.core
 
+import com.novainc.agt.BuildConfig
+
 /**
- * Fixed endpoints for the three legs. The Supabase anon key is a public
- * key by design (PostgREST + RLS); it is not a secret and is safe to ship.
- * The tunnel token is NEVER shipped: the owner pastes it once in Settings.
+ * Fixed endpoints for the three legs, plus the client config that CI
+ * injects from GitHub repo secrets at build time (BuildConfig): the
+ * Supabase anon key and the Cloudflare tunnel token are baked into the
+ * release build so the app works on first launch with nothing to paste.
+ * A value entered in Settings still overrides the baked one.
  */
 object AgtConfig {
     const val SUPABASE_URL = "https://ktbyxyzbqfdhmedkrmpb.supabase.co"
-    // Filled in from the real termux-agt project before release. Never guess
-    // a key: an empty key makes the Supabase leg report "not configured".
-    const val SUPABASE_ANON_KEY = ""
+    // From CI secret SUPABASE_ANON_KEY via BuildConfig. An empty value
+    // (local build without the secret) makes the Supabase leg report
+    // "not configured" instead of guessing a key.
+    val SUPABASE_ANON_KEY: String = BuildConfig.SUPABASE_ANON_KEY
+    // From CI secret TUNNEL_TOKEN via BuildConfig: the Cloudflare tunnel
+    // token for TUNNEL_HOSTNAME, baked in so the tunnel connects on
+    // first launch. A Settings entry overrides it.
+    val TUNNEL_TOKEN: String = BuildConfig.TUNNEL_TOKEN
     const val FIREBASE_RTDB_URL = "https://agentlink-84609-default-rtdb.firebaseio.com"
+    // Web API key of the same Firebase project: public client config,
+    // used only to exchange the Phoenix-minted custom token for an ID
+    // token at the Identity Toolkit endpoint.
+    const val FIREBASE_API_KEY = "AIzaSyDk9Ic4pbQglf0kyIBa_oLGmu5iHbnWFFI"
     const val TUNNEL_HOSTNAME = "termux.novamail.store"
     // The rootfs ships inside the APK when the build bundles it. If it is
     // not bundled, the app downloads it in 10 MB parts from the repo

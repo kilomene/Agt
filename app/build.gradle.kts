@@ -2,6 +2,7 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
+    id("com.google.gms.google-services")
 }
 
 android {
@@ -12,8 +13,14 @@ android {
         applicationId = "com.novainc.agt"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.0.0"
+        versionCode = 3
+        versionName = "1.1.0"
+        // Client config injected at build time from CI secrets (GitHub
+        // repo secrets SUPABASE_ANON_KEY and TUNNEL_TOKEN). Local builds
+        // without the env vars build with empty values and the legs
+        // report not-configured, exactly like before.
+        buildConfigField("String", "SUPABASE_ANON_KEY", "\"${System.getenv("SUPABASE_ANON_KEY") ?: ""}\"")
+        buildConfigField("String", "TUNNEL_TOKEN", "\"${System.getenv("TUNNEL_TOKEN") ?: ""}\"")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -35,6 +42,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
     androidResources {
         // Keep the rootfs asset uncompressed so the installer can copy it
@@ -65,6 +73,14 @@ dependencies {
     implementation("com.google.code.gson:gson:2.10.1")
     // Tar extraction of the rootfs, snapshots and bundles (pure Java).
     implementation("org.apache.commons:commons-compress:1.26.1")
+    // Firebase: real FCM push (FirebaseMessagingService) plus the
+    // RTDB doorbell. The app is registered in project agentlink-84609;
+    // google-services.json is materialized by CI from a repo secret.
+    val firebaseBom = platform("com.google.firebase:firebase-bom:33.3.0")
+    implementation(firebaseBom)
+    implementation("com.google.firebase:firebase-messaging")
+    implementation("com.google.firebase:firebase-database")
+
     // Ed25519 device identity and signed jobs (pure Java, all API levels).
     implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
 

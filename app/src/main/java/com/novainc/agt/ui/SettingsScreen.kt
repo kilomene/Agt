@@ -22,9 +22,10 @@ import androidx.compose.ui.unit.sp
 import com.novainc.agt.core.AgtRuntime
 
 /**
- * Settings: the tunnel token and the host identity. The token is never
- * shipped in the app and never leaves this phone: it is typed here once
- * and stored in the app-private settings file.
+ * Settings: overrides and host identity. The release build ships with
+ * the tunnel token and the Supabase anon key baked in from CI secrets,
+ * so the host works on first launch; anything typed here overrides the
+ * baked value and is stored only in the app-private settings file.
  */
 @Composable
 fun SettingsScreen(onBack: () -> Unit) {
@@ -48,8 +49,11 @@ fun SettingsScreen(onBack: () -> Unit) {
             Text("CLOUDFLARE TUNNEL TOKEN", color = AgtColors.Gold, fontSize = 11.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))
             Text(
-                "Paste the tunnel token once. The tunnel then connects as ${com.novainc.agt.core.AgtConfig.TUNNEL_HOSTNAME}. " +
-                    "The token is stored only here and is never sent anywhere except to cloudflared.",
+                (if (com.novainc.agt.core.AgtConfig.TUNNEL_TOKEN.isNotEmpty())
+                    "A tunnel token is baked into this build, so the tunnel connects on its own as ${com.novainc.agt.core.AgtConfig.TUNNEL_HOSTNAME}. "
+                else
+                    "No token is baked into this build. Paste the tunnel token once and the tunnel connects as ${com.novainc.agt.core.AgtConfig.TUNNEL_HOSTNAME}. ") +
+                    "A token saved here overrides the baked one. It is never sent anywhere except to cloudflared.",
                 color = AgtColors.TextPrimary, fontSize = 13.sp
             )
             Spacer(Modifier.height(12.dp))
@@ -71,9 +75,11 @@ fun SettingsScreen(onBack: () -> Unit) {
             Text("SUPABASE ANON KEY", color = AgtColors.Gold, fontSize = 11.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))
             Text(
-                "The public anon key for the termux-agt project. It is safe to store here: " +
-                    "the tables are protected by row level security. Without it the Supabase " +
-                    "leg stays off and Phoenix cannot send jobs.",
+                (if (com.novainc.agt.core.AgtConfig.SUPABASE_ANON_KEY.isNotEmpty())
+                    "The anon key for the termux-agt project is baked into this build, so the Supabase leg is live. "
+                else
+                    "No anon key is baked into this build. Paste the public anon key for the termux-agt project here. ") +
+                    "A key saved here overrides the baked one. The tables are protected by row level security.",
                 color = AgtColors.TextPrimary, fontSize = 13.sp
             )
             Spacer(Modifier.height(12.dp))
@@ -94,7 +100,9 @@ fun SettingsScreen(onBack: () -> Unit) {
             Spacer(Modifier.height(4.dp))
             Text("Linux: ${if (runtime.proot.isInstalled()) "installed (${settings.rootfsVersion})" else "not installed"}", color = AgtColors.TextPrimary, fontSize = 13.sp)
             Spacer(Modifier.height(4.dp))
-            Text("Firebase token: ${if (settings.firebaseToken.isNotEmpty()) "set" else "not set yet, Phoenix sends it"}", color = AgtColors.TextPrimary, fontSize = 13.sp)
+            Text("Firebase RTDB token: ${if (settings.firebaseToken.isNotEmpty()) "set" else "not set yet, Phoenix sends it"}", color = AgtColors.TextPrimary, fontSize = 13.sp)
+            Spacer(Modifier.height(4.dp))
+            Text("FCM push: ${if (settings.fcmToken.isNotEmpty()) "registered, token on file with Phoenix" else "registering with Firebase"}", color = AgtColors.TextPrimary, fontSize = 13.sp)
         }
         Spacer(Modifier.height(16.dp))
         GhostButton("Back", onClick = onBack, modifier = Modifier.fillMaxWidth())

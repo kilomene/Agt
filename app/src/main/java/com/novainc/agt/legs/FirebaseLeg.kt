@@ -53,18 +53,52 @@ class FirebaseLeg(private val store: AgtStore) {
     private var lastWake: Long = 0
     private var lastAlert: Long = 0
 
+    @Volatile private var idToken: String = ""
+    @Volatile private var idTokenExpiryMs: Long = 0
+
+    /** The stored token is a Firebase custom token minted by Phoenix.
+     * RTDB REST wants an ID token, so exchange the custom token at the
+     * Identity Toolkit endpoint (cached for 50 minutes). If the exchange
+     * fails, fall back to the stored token itself so behaviour never
+     * regresses below the original direct use. */
+    private fun authToken(customToken: String): String {
+        val now = System.currentTimeMillis()
+        if (idToken.isNotEmpty() && now < idTokenExpiryMs) return idToken
+        return try {
+            val body = JsonObject().apply {
+                addProperty("token", customToken)
+                addProperty("returnSecureToken", true)
+            }
+            val req = Request.Builder()
+                .url("https://identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken?key=${AgtConfig.FIREBASE_API_KEY}")
+                .post(gson.toJson(body).toRequestBody("application/json".toMediaType()))
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return customToken
+                val obj = com.google.gson.JsonParser.parseString(resp.body?.string() ?: "").asJsonObject
+                val id = obj.get("idToken")?.asString ?: return customToken
+                idToken = id
+                idTokenExpiryMs = now + 50 * 60 * 1000
+                id
+            }
+        } catch (e: Exception) {
+            customToken
+        }
+    }
+
     fun start(scope: CoroutineScope, deviceId: String, telemetry: () -> JsonObject) {
         stop()
         loop = scope.launch(Dispatchers.IO) {
             while (isActive) {
-                val token = store.loadSettings().firebaseToken
-                if (token.isBlank()) {
+                val custom = store.loadSettings().firebaseToken
+                if (custom.isBlank()) {
                     _state.value = State.NOT_CONFIGURED
                     _detail.value = "Firebase token not set yet. Phoenix sends it as a signed job."
                     delay(30_000)
                     continue
                 }
                 try {
+                    val token = authToken(custom)
                     writePresence(deviceId, token, telemetry())
                     checkWake(deviceId, token)
                     checkAlert(deviceId, token)

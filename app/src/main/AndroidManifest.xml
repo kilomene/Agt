@@ -28,6 +28,21 @@
         </activity>
 
         <service
+            android:name=".legs.AgtMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_icon"
+            android:resource="@drawable/ic_stat_agt" />
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_channel_id"
+            android:value="agt_alerts" />
+
+        <service
             android:name=".core.AgtService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />

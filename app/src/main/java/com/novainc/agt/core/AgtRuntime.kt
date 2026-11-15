@@ -82,6 +82,7 @@ class AgtRuntime private constructor(private val context: Context) {
             addProperty("storageFreeGb", t?.storageFreeGb)
             addProperty("memoryAvailGb", t?.memoryAvailGb)
             addProperty("uptimeSec", (t?.deviceUptimeMs ?: 0L) / 1000)
+            addProperty("fcmToken", store.loadSettings().fcmToken)
             addProperty("linuxReady", proot.isInstalled())
             addProperty("deployments", store.loadDeployments().size)
             addProperty("running", store.loadDeployments().count { it.status == "running" })
@@ -142,7 +143,8 @@ class AgtRuntime private constructor(private val context: Context) {
         val settings = store.loadSettings()
         wireAlerts()
         supervisor.restoreAll()
-        tunnel.start(scope, settings.tunnelToken)
+        tunnel.start(scope, settings.tunnelToken.ifBlank { AgtConfig.TUNNEL_TOKEN })
+        refreshFcmToken()
         firebase.onWake = { scope.launch { pollJobsOnce() } }
         firebase.start(scope, deviceId()) { telemetryJson() }
         jobEngine.hostId = hostId
@@ -167,6 +169,25 @@ class AgtRuntime private constructor(private val context: Context) {
                 }
                 delay(60_000)
             }
+        }
+    }
+
+    /** Ask FCM for this device's registration token and store it. The
+     * token also rides every Supabase heartbeat inside telemetry, which is
+     * how Phoenix learns where to push. Rotations are handled by
+     * AgtMessagingService.onNewToken. */
+    private fun refreshFcmToken() {
+        try {
+            com.google.firebase.messaging.FirebaseMessaging.getInstance().token
+                .addOnSuccessListener { token ->
+                    if (!token.isNullOrBlank() && token != store.loadSettings().fcmToken) {
+                        store.saveSettings(store.loadSettings().copy(fcmToken = token))
+                    }
+                }
+        } catch (e: Exception) {
+            // Firebase not initialized (local build without
+            // google-services.json): the RTDB doorbell and Supabase poll
+            // still cover wake-ups, and the state is visible in Settings.
         }
     }
 
