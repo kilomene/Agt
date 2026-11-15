@@ -573,3 +573,32 @@ its own temp file there) to filesDir. A corrupt leftover tree now
 fails the check at startup, is wiped, and is re-extracted clean
 with the link in place, no network needed (the rootfs ships inside
 the APK).
+
+v1.6.3 (2026-11-15): the Host screen photo from the field named
+both remaining leg failures exactly. Supabase: "Sync failing: no
+such algorithm: Ed25519 for provider BC". DeviceIdentity asked the
+JCA for provider "BC" by name and only registered the bundled full
+BouncyCastle when no "BC" provider existed; Android ships a
+stripped built-in "BC" with no Ed25519, so on the phone every key
+and signature call threw NoSuchAlgorithmException before any
+network traffic, killing sync, the FCM token upsert and job
+verification in one place, while JVM tests stayed green because
+the desktop JDK has no built-in "BC". DeviceIdentity now uses no
+JCA at all: keys are a raw 32-byte seed (a PKCS8 blob left by an
+older build is migrated by extracting its seed), and derive, sign
+and verify run entirely on the bundled BouncyCastle lightweight
+RFC 8032 API. Proven before shipping: the exact calls were run
+against the bundled bcprov 1.78.1 jar and matched an independent
+implementation (Python cryptography) byte for byte, and a real job
+signed by the real Phoenix sender verified against the baked
+Phoenix key. AgtIdentityTest pins those vectors in the suite and
+adds a poisoned-provider test that reproduces the Android
+condition (a "BC" provider that cannot do Ed25519) on the JVM.
+Tunnel: cloudflared's Go resolver defaulted to [::1]:53 on the
+phone, which answered the edge SRV lookup with SERVFAIL ("server
+misbehaving"), so the tunnel never connected on a working
+internet connection. TunnelLeg now passes --dns-resolver-addrs
+with the active network's own DNS servers first, then 1.1.1.1 and
+8.8.8.8; the flag was verified present in the shipped cloudflared
+binary and exercised on a same-version build (edge SRV resolution
+succeeds through the named resolver).

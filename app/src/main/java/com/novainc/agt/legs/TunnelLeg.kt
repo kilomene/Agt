@@ -20,6 +20,14 @@ import java.io.File
  * packaging in build.gradle.kts makes that a real file). The tunnel
  * token is baked into the build from the CI secret and passed to
  * cloudflared through the environment: zero setup on the phone.
+ *
+ * DNS: cloudflared's Go resolver, left to its defaults on Android,
+ * asks [::1]:53 for the edge SRV records, and on the owner's phone
+ * that stub answers SERVFAIL ("server misbehaving"), so the tunnel
+ * never connected even with the internet up. The leg therefore
+ * hands cloudflared real resolver addresses: the active network's
+ * own DNS servers first (the same ones the phone's working
+ * connections use), then public resolvers as backup.
  */
 class TunnelLeg(private val context: Context) {
     enum class State { OFF, STARTING, CONNECTED, ERROR, NOT_CONFIGURED }
@@ -53,6 +61,28 @@ class TunnelLeg(private val context: Context) {
 
     fun binary(): File = File(context.applicationInfo.nativeLibraryDir, "libcloudflared.so")
 
+    /** Resolver addresses for cloudflared's edge discovery, as
+     * repeated --dns-resolver-addrs flags: the active network's DNS
+     * servers, then 1.1.1.1 and 8.8.8.8. Never empty. */
+    private fun dnsResolverArgs(): List<String> {
+        val addrs = LinkedHashSet<String>()
+        try {
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE)
+                as android.net.ConnectivityManager
+            val props = cm.getLinkProperties(cm.activeNetwork)
+            props?.dnsServers?.forEach { addr ->
+                val host = addr.hostAddress ?: return@forEach
+                addrs.add(if (host.contains(':')) "[$host]:53" else "$host:53")
+            }
+        } catch (e: Exception) {
+            // No network view right now: the public fallbacks below
+            // still give cloudflared a working resolver path.
+        }
+        addrs.add("1.1.1.1:53")
+        addrs.add("8.8.8.8:53")
+        return addrs.flatMap { listOf("--dns-resolver-addrs", it) }
+    }
+
     fun start(scope: CoroutineScope, token: String) {
         stop()
         if (token.isBlank()) {
@@ -70,7 +100,9 @@ class TunnelLeg(private val context: Context) {
         _detail.value = "Starting tunnel to ${AgtConfig.TUNNEL_HOSTNAME}"
         scope.launch(Dispatchers.IO) {
             try {
-                val pb = ProcessBuilder(bin.absolutePath, "tunnel", "run")
+                val pb = ProcessBuilder(
+                    listOf(bin.absolutePath, "tunnel", "run") + dnsResolverArgs()
+                )
                 pb.environment()["TUNNEL_TOKEN"] = token
                 pb.redirectErrorStream(true)
                 val proc = pb.start()

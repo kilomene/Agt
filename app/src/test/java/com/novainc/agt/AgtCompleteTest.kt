@@ -6,22 +6,12 @@ import com.novainc.agt.agent.JobEngine
 import com.novainc.agt.deploy.DeploymentEngine
 import com.novainc.agt.deploy.Templates
 import com.novainc.agt.linux.Proot
-import org.bouncycastle.jce.provider.BouncyCastleProvider
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
-import org.junit.Before
 import org.junit.Test
-import java.security.Security
 
 class AgtCompleteTest {
-
-    @Before
-    fun setup() {
-        if (Security.getProvider("BC") == null) {
-            Security.addProvider(BouncyCastleProvider())
-        }
-    }
 
     @Test
     fun prootCommandIsSandboxedAndBound() {
@@ -67,28 +57,27 @@ class AgtCompleteTest {
 
     @Test
     fun deviceIdentitySignsAndVerifies() {
-        val gen = java.security.KeyPairGenerator.getInstance("Ed25519", "BC")
-        val pair = gen.generateKeyPair()
+        // Fixed seed, so this is a stable roundtrip through the raw
+        // byte API (no JCA anywhere; see AgtIdentityTest for the
+        // cross-implementation vectors and the Android provider
+        // regression test).
+        val seed = ByteArray(32) { it.toByte() }
         val payload = "hello agt".toByteArray(Charsets.UTF_8)
-        val sig = java.security.Signature.getInstance("Ed25519", "BC").apply {
-            initSign(pair.private)
-            update(payload)
-        }.sign()
-        assertTrue(DeviceIdentity.verify(pair.public, payload, sig))
-        assertFalse(DeviceIdentity.verify(pair.public, "tampered".toByteArray(Charsets.UTF_8), sig))
-        val b64 = java.util.Base64.getEncoder().withoutPadding()
-            .encodeToString(pair.public.encoded)
-        assertEquals(pair.public, DeviceIdentity.publicKeyFromBase64(b64))
-        // Phoenix sends the RAW 32-byte public key, unpadded base64.
-        // The app must accept that form too.
-        val raw = pair.public.encoded.takeLast(32).toByteArray()
-        val rawB64 = java.util.Base64.getEncoder().withoutPadding().encodeToString(raw)
-        assertEquals(pair.public, DeviceIdentity.publicKeyFromBase64(rawB64))
+        val public = DeviceIdentity.derivePublicKey(seed)
+        val sig = DeviceIdentity.sign(seed, payload)
+        assertTrue(DeviceIdentity.verify(public, payload, sig))
+        assertFalse(DeviceIdentity.verify(public, "tampered".toByteArray(Charsets.UTF_8), sig))
+        // Both published key forms must decode to the same raw key:
+        // the 44-byte SPKI form and the raw 32-byte form Phoenix sends.
+        val spkiB64 = DeviceIdentity.encodePublicKeyBase64(public)
+        assertTrue(public.contentEquals(DeviceIdentity.publicKeyBytesFromBase64(spkiB64)))
+        val rawB64 = java.util.Base64.getEncoder().withoutPadding().encodeToString(public)
+        assertTrue(public.contentEquals(DeviceIdentity.publicKeyBytesFromBase64(rawB64)))
         // And an unpadded signature must decode.
         val sigB64 = java.util.Base64.getEncoder().withoutPadding().encodeToString(sig)
         val decoded = DeviceIdentity.signatureFromBase64(sigB64)
         assertTrue(decoded.contentEquals(sig))
-        assertTrue(DeviceIdentity.verify(pair.public, payload, decoded!!))
+        assertTrue(DeviceIdentity.verify(public, payload, decoded!!))
     }
 
     @Test

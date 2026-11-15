@@ -135,7 +135,7 @@ class JobEngine(
         JsonObject().apply { addProperty("error", message) }
 
     private fun verify(payload: JsonObject, signatureB64: String, publicKeyB64: String): Boolean {
-        val public = DeviceIdentity.publicKeyFromBase64(publicKeyB64) ?: return false
+        val public = DeviceIdentity.publicKeyBytesFromBase64(publicKeyB64) ?: return false
         val sig = DeviceIdentity.signatureFromBase64(signatureB64) ?: return false
         return DeviceIdentity.verify(public, canonicalJson(payload).toByteArray(Charsets.UTF_8), sig)
     }
@@ -146,7 +146,7 @@ class JobEngine(
         if (expectedCode.isEmpty() || code != expectedCode) {
             return fail("pairing code does not match")
         }
-        if (DeviceIdentity.publicKeyFromBase64(key) == null) {
+        if (DeviceIdentity.publicKeyBytesFromBase64(key) == null) {
             return fail("bad Phoenix public key")
         }
         val settings = store.loadSettings()
