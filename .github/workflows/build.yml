@@ -28,6 +28,7 @@ jobs:
           set -euo pipefail
           mkdir -p app/src/main/jniLibs/arm64-v8a app/src/main/assets
           echo "fa10b1a7818c2f5b1dcb5834450570c368c9ecf66d31521509621b95c4538a45  native-binaries/proot-aarch64" | sha256sum -c -
+          cat native-binaries/cloudflared-arm64.part* > native-binaries/cloudflared-arm64
           echo "abe54a006acf9faf2d19ee9d953cb0d0804e92f59c5382a162e57b84d086f56f  native-binaries/cloudflared-arm64" | sha256sum -c -
           cp native-binaries/proot-aarch64 app/src/main/jniLibs/arm64-v8a/libproot.so
           cp native-binaries/cloudflared-arm64 app/src/main/jniLibs/arm64-v8a/libcloudflared.so
