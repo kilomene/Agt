@@ -90,11 +90,17 @@ class JobEngine(
         try {
             supabase.claimJob(jobId)
             val settings = store.loadSettings()
+            // Trust root: the key stored by pairing when there is one,
+            // otherwise the Phoenix public key baked into the build.
+            // Setup jobs (firebase_token) therefore verify on a fresh
+            // install with no pairing step in the way.
+            val trustedKey = settings.phoenixPublicKey.ifEmpty {
+                com.novainc.agt.core.AgtConfig.PHOENIX_PUBLIC_KEY
+            }
             val result = when {
                 kind == "pair" -> handlePair(payload, settings.pairingCode)
                 signature.isNullOrEmpty() -> fail("missing signature")
-                settings.phoenixPublicKey.isEmpty() -> fail("phone is not paired with Phoenix")
-                !verify(payload, signature, settings.phoenixPublicKey) -> fail("signature does not verify")
+                !verify(payload, signature, trustedKey) -> fail("signature does not verify")
                 else -> execute(kind, payload)
             }
             supabase.completeJob(jobId, result)

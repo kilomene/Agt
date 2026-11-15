@@ -15,9 +15,11 @@ import java.io.File
 /**
  * The tunnel leg: the same Cloudflare Tunnel and hostname the Termux
  * stack used, so https://termux.novamail.store keeps working. The
- * cloudflared binary ships as libcloudflared.so in jniLibs. The tunnel
- * token is never baked in: it lives in Settings, entered once by the
- * owner, and is passed to cloudflared through the environment.
+ * cloudflared binary ships as libcloudflared.so in jniLibs and is
+ * extracted to the native library dir at install (legacy jniLibs
+ * packaging in build.gradle.kts makes that a real file). The tunnel
+ * token is baked into the build from the CI secret and passed to
+ * cloudflared through the environment: zero setup on the phone.
  */
 class TunnelLeg(private val context: Context) {
     enum class State { OFF, STARTING, CONNECTED, ERROR, NOT_CONFIGURED }
@@ -28,6 +30,11 @@ class TunnelLeg(private val context: Context) {
     private val _detail = MutableStateFlow("")
     val detail: StateFlow<String> = _detail
 
+    /** Last measured TCP connect time to the Cloudflare edge, in
+     * milliseconds. Null until a real measurement lands. */
+    private val _latencyMs = MutableStateFlow<Long?>(null)
+    val latencyMs: StateFlow<Long?> = _latencyMs
+
     private var process: Process? = null
     private var watcher: Job? = null
 
@@ -37,7 +44,7 @@ class TunnelLeg(private val context: Context) {
         stop()
         if (token.isBlank()) {
             _state.value = State.NOT_CONFIGURED
-            _detail.value = "Tunnel token not set. Add it in Settings."
+            _detail.value = "This build carries no tunnel token. CI bakes it from the repo secret."
             return
         }
         val bin = binary()
@@ -70,6 +77,19 @@ class TunnelLeg(private val context: Context) {
                 watcher = scope.launch {
                     while (isActive) {
                         delay(5000)
+                        if (proc.isAlive && _state.value == State.CONNECTED) {
+                            // Real latency: time a TCP connect to the
+                            // Cloudflare edge endpoint cloudflared uses.
+                            try {
+                                val t0 = System.currentTimeMillis()
+                                java.net.Socket().use { s ->
+                                    s.connect(java.net.InetSocketAddress("region1.v2.argotunnel.com", 7844), 3000)
+                                }
+                                _latencyMs.value = System.currentTimeMillis() - t0
+                            } catch (e: Exception) {
+                                // No measurement this cycle: keep the last real one.
+                            }
+                        }
                         if (!proc.isAlive) {
                             _state.value = State.ERROR
                             _detail.value = "cloudflared exited (code ${proc.exitValue()}); restarting"

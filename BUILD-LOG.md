@@ -319,3 +319,56 @@ sensitive than the Termux stack ever was. On top of v1.2.0:
   fallback), plus watchdog and autostart rows on the resilience card.
   On a Redmi that MIUI switch is the one gate no code can pass, so
   the app now takes the owner straight to it.
+
+## Design fidelity and zero-setup round (2026-11-15, v1.4.0)
+
+Owner verdict on v1.3.0, with photos: the UI did not match the
+approved design, the tunnel leg reported "cloudflared binary missing
+from the app install", the Firebase leg sat at TOKEN PENDING, and
+Settings asked him to paste the tunnel token and the anon key by
+hand. Every one of those was real. Fixes, root cause first:
+
+- Binary missing, root cause: AGP stores jniLibs uncompressed inside
+  the APK by default and never extracts them, so
+  File(nativeLibraryDir, "libcloudflared.so") does not exist on the
+  phone even though the binary is inside the APK (the same latent bug
+  waited in libproot.so for the Linux layer). Fix: legacy jniLibs
+  packaging in build.gradle.kts, which extracts both binaries to real
+  files at install time.
+- Zero setup, enforced in code: the Settings paste fields and save
+  buttons are deleted. Settings is a status page now. The legs read
+  only the values CI bakes from the GitHub repo secrets
+  (SupabaseLeg.effectiveKey returns the BuildConfig key; the tunnel
+  starts with the BuildConfig token). Stored overrides are ignored.
+- Firebase key bootstrap: the Phoenix Ed25519 public key is baked
+  into AgtConfig (a public key is not a secret). JobEngine verifies
+  signed jobs against the paired key when one is stored and the
+  baked key otherwise, so the firebase_token delivery verifies on a
+  fresh install with no pairing step gating it. Pairing is now
+  optional and the Agent screen says so.
+- Linux is part of the app: the service starts itself when the app
+  opens, and startAll extracts the bundled rootfs automatically when
+  Linux is not installed yet. The Install Linux button is gone; a
+  retry appears only after a real install failure.
+- Host screen rebuilt to the approved design exactly: shield tile
+  header with the AGT. wordmark and a bell button (opens Settings),
+  gold-bordered banner (HOST ONLINE or OFFLINE from the service state
+  alone, device model pill, gold uptime in the "6d 14:22:08" form;
+  device uptime never poses as host uptime again), the three-column
+  resilience strip with real states, one CONNECTION LEGS card with a
+  live count and real measured latency (tunnel: TCP connect to the
+  Cloudflare edge; Firebase: presence write round trip; Supabase:
+  host upsert round trip; nothing prints before it is measured), the
+  TELEMETRY card with a 3 by 2 tile grid (CPU from /proc/stat deltas,
+  memory used, storage free, battery with charge state, battery
+  temperature, network link rate and radio label, all read live),
+  the four quick actions (Deploy, Console, Snapshot triggers an
+  immediate Supabase sync, Tunnel restarts the leg), and the five-tab
+  bottom nav (Host, Deploy, Console, Agent, Templates) with new hand
+  drawn icons (home, layers, flame, grid, bell, lock, refresh, and
+  the rest of the set).
+- Telemetry to Phoenix now carries appVersion and firebaseKeySet so
+  Phoenix can watch a phone come up on the new build and deliver the
+  Firebase key itself.
+- Tests: AgtFormatTest adds 7 tests (duration form, latency form,
+  CPU sampler math and parsing). Suite is 33 tests.

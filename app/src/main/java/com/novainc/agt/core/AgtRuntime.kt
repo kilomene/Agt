@@ -84,6 +84,8 @@ class AgtRuntime private constructor(private val context: Context) {
             addProperty("uptimeSec", (t?.deviceUptimeMs ?: 0L) / 1000)
             addProperty("fcmToken", store.loadSettings().fcmToken)
             addProperty("linuxReady", proot.isInstalled())
+            addProperty("appVersion", com.novainc.agt.BuildConfig.VERSION_NAME)
+            addProperty("firebaseKeySet", store.loadSettings().firebaseToken.isNotEmpty())
             addProperty("deployments", store.loadDeployments().size)
             addProperty("running", store.loadDeployments().count { it.status == "running" })
         }
@@ -148,12 +150,49 @@ class AgtRuntime private constructor(private val context: Context) {
         }
     }
 
+    /** One Supabase sync cycle: host upsert (timed, it feeds the legs
+     * card latency), heartbeat, deployment upserts. */
+    private suspend fun runSyncCycle() {
+        if (!supabase.configured) return
+        val id = deviceId()
+        val t0 = System.currentTimeMillis()
+        val hid = supabase.upsertHost(id, "AGT host", identity.publicKeyBase64(), telemetryJson())
+        supabase.noteLatency(System.currentTimeMillis() - t0)
+        hostId = hid
+        jobEngine.hostId = hid
+        supabase.heartbeat(hid, telemetryJson())
+        val deployments = store.loadDeployments()
+        for (d in deployments) {
+            try { supabase.upsertDeployment(hid, d) } catch (e: Exception) { }
+        }
+    }
+
+    /** Quick action: sync to Supabase right now instead of waiting
+     * out the 60 second cycle. */
+    fun syncNow() {
+        scope.launch {
+            try { runSyncCycle() } catch (e: Exception) { }
+        }
+    }
+
+    /** Quick action: restart the tunnel leg with the baked token. */
+    fun restartTunnel() {
+        tunnel.start(scope, AgtConfig.TUNNEL_TOKEN)
+    }
+
     /** Start everything the host needs: supervisor restore, legs, jobs. */
     fun startAll() {
-        val settings = store.loadSettings()
         wireAlerts()
         supervisor.restoreAll()
-        tunnel.start(scope, settings.tunnelToken.ifBlank { AgtConfig.TUNNEL_TOKEN })
+        // The tunnel token is baked into the build from the CI secret.
+        // No Settings entry exists and none is needed.
+        tunnel.start(scope, AgtConfig.TUNNEL_TOKEN)
+        // Linux is part of the app, not an optional extra the owner
+        // installs by hand: the rootfs ships inside the APK, so first
+        // start extracts it automatically in the background.
+        if (!proot.isInstalled() && !_installing.value) {
+            installLinux()
+        }
         refreshFcmToken()
         firebase.onWake = { scope.launch { pollJobsOnce() } }
         firebase.start(scope, deviceId()) { telemetryJson() }
@@ -163,17 +202,7 @@ class AgtRuntime private constructor(private val context: Context) {
         syncJob = scope.launch {
             while (isActive) {
                 try {
-                    if (supabase.configured) {
-                        val id = deviceId()
-                        val hid = supabase.upsertHost(id, "AGT host", identity.publicKeyBase64(), telemetryJson())
-                        hostId = hid
-                        jobEngine.hostId = hid
-                        supabase.heartbeat(hid, telemetryJson())
-                        val deployments = store.loadDeployments()
-                        for (d in deployments) {
-                            try { supabase.upsertDeployment(hid, d) } catch (e: Exception) { }
-                        }
-                    }
+                    runSyncCycle()
                 } catch (e: Exception) {
                     // Sync failure is not fatal: the next cycle retries.
                 }

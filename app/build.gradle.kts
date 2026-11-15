@@ -13,8 +13,8 @@ android {
         applicationId = "com.novainc.agt"
         minSdk = 26
         targetSdk = 34
-        versionCode = 5
-        versionName = "1.3.0"
+        versionCode = 6
+        versionName = "1.4.0"
         // Client config injected at build time from CI secrets (GitHub
         // repo secrets SUPABASE_ANON_KEY and TUNNEL_TOKEN). Local builds
         // without the env vars build with empty values and the legs
@@ -50,6 +50,15 @@ android {
         noCompress += "bundle"
     }
     packaging {
+        jniLibs {
+            // The app EXECUTES its jniLibs (libproot.so, libcloudflared.so)
+            // from the native library dir, so they must be extracted to
+            // real files at install time. Without legacy packaging AGP
+            // stores them uncompressed inside the APK and File.exists()
+            // on nativeLibraryDir is false on the phone, which shipped
+            // as "cloudflared binary missing from the app install".
+            useLegacyPackaging = true
+        }
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }

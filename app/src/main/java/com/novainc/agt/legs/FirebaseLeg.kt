@@ -25,8 +25,10 @@ import java.util.concurrent.TimeUnit
  *
  * Auth: the app uses a Firebase custom token that Phoenix mints with the
  * service account and delivers as a signed Supabase job (kind
- * firebase_token). Until that token arrives the leg reports
- * NOT_CONFIGURED and the doorbell falls back to the Supabase poll.
+ * firebase_token). The job verifies against the Phoenix public key
+ * baked into the build, so the token lands on its own with no pairing
+ * and nothing for the owner to set up. Until it arrives the leg
+ * reports NOT_CONFIGURED and the doorbell falls back to the poll.
  */
 class FirebaseLeg(private val store: AgtStore) {
     enum class State { OFF, NOT_CONFIGURED, CONNECTED, ERROR }
@@ -42,6 +44,11 @@ class FirebaseLeg(private val store: AgtStore) {
 
     private val _detail = MutableStateFlow("")
     val detail: StateFlow<String> = _detail
+
+    /** Last measured presence write round trip in milliseconds.
+     * Null until the first real write lands. */
+    private val _latencyMs = MutableStateFlow<Long?>(null)
+    val latencyMs: StateFlow<Long?> = _latencyMs
 
     private var loop: Job? = null
     var onWake: (() -> Unit)? = null
@@ -93,13 +100,15 @@ class FirebaseLeg(private val store: AgtStore) {
                 val custom = store.loadSettings().firebaseToken
                 if (custom.isBlank()) {
                     _state.value = State.NOT_CONFIGURED
-                    _detail.value = "Firebase token not set yet. Phoenix sends it as a signed job."
+                    _detail.value = "Key on its way from Phoenix. It lands on its own, nothing to set up."
                     delay(30_000)
                     continue
                 }
                 try {
                     val token = authToken(custom)
+                    val t0 = System.currentTimeMillis()
                     writePresence(deviceId, token, telemetry())
+                    _latencyMs.value = System.currentTimeMillis() - t0
                     checkWake(deviceId, token)
                     checkAlert(deviceId, token)
                     _state.value = State.CONNECTED

@@ -27,13 +27,20 @@ class SupabaseLeg(private val store: AgtStore) {
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
 
-    /** The effective anon key: a build-time constant, or the key entered
-     * in Settings (or delivered by a Phoenix job). Empty means the leg is
-     * not configured and every call fails closed. */
-    fun effectiveKey(): String {
-        val fromSettings = store.loadSettings().supabaseAnonKey
-        if (fromSettings.isNotEmpty()) return fromSettings
-        return AgtConfig.SUPABASE_ANON_KEY
+    /** The anon key baked into the build from the CI secret. There is
+     * no Settings entry and no override: the owner ordered the key into
+     * GitHub, baked at build time, never pasted by hand. Empty means a
+     * local build without the secret, and every call fails closed. */
+    fun effectiveKey(): String = AgtConfig.SUPABASE_ANON_KEY
+
+    /** Last measured PostgREST round trip in milliseconds, set by the
+     * runtime around its sync calls. Null until the first sync lands,
+     * so the UI never prints an invented number. */
+    private val _latencyMs = kotlinx.coroutines.flow.MutableStateFlow<Long?>(null)
+    val latencyMs: kotlinx.coroutines.flow.StateFlow<Long?> = _latencyMs
+
+    fun noteLatency(ms: Long) {
+        _latencyMs.value = ms
     }
 
     val configured: Boolean

@@ -65,9 +65,9 @@ fun AgentScreen() {
             }
             Spacer(Modifier.weight(1f))
             StatusPill(
-                if (paired) "PAIRED" else "NOT PAIRED",
-                if (paired) AgtColors.Emerald else AgtColors.Amber,
-                pulsing = paired
+                if (paired) "PAIRED" else "KEY BAKED IN",
+                AgtColors.Emerald,
+                pulsing = true
             )
         }
         Spacer(Modifier.height(16.dp))
@@ -87,11 +87,13 @@ fun AgentScreen() {
         Spacer(Modifier.height(12.dp))
         if (!paired) {
             AgtCard {
-                Text("PAIR WITH PHOENIX", color = AgtColors.Gold, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                Text("PAIRING CODE (OPTIONAL)", color = AgtColors.Gold, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "Tell Phoenix this code. Phoenix sends a signed pair job, and the phone " +
-                        "accepts the Phoenix key only when the code matches.",
+                    "The Phoenix key is already baked into this build, so signed jobs verify " +
+                        "from the first minute and nothing waits on pairing. Pairing is optional: " +
+                        "it stores the same key on this phone and hands Phoenix this phone's " +
+                        "public key in the reply. Tell Phoenix this code only if you want that link named.",
                     color = AgtColors.TextPrimary, fontSize = 13.sp
                 )
                 Spacer(Modifier.height(10.dp))

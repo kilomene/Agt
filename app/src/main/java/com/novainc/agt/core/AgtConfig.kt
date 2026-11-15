@@ -6,8 +6,9 @@ import com.novainc.agt.BuildConfig
  * Fixed endpoints for the three legs, plus the client config that CI
  * injects from GitHub repo secrets at build time (BuildConfig): the
  * Supabase anon key and the Cloudflare tunnel token are baked into the
- * release build so the app works on first launch with nothing to paste.
- * A value entered in Settings still overrides the baked one.
+ * build so the app works on first launch with nothing to paste and
+ * nothing to set up. There is no Settings override: the owner ordered
+ * the secrets into GitHub, baked at build time, never pasted by hand.
  */
 object AgtConfig {
     const val SUPABASE_URL = "https://ktbyxyzbqfdhmedkrmpb.supabase.co"
@@ -17,8 +18,15 @@ object AgtConfig {
     val SUPABASE_ANON_KEY: String = BuildConfig.SUPABASE_ANON_KEY
     // From CI secret TUNNEL_TOKEN via BuildConfig: the Cloudflare tunnel
     // token for TUNNEL_HOSTNAME, baked in so the tunnel connects on
-    // first launch. A Settings entry overrides it.
+    // first launch with zero setup.
     val TUNNEL_TOKEN: String = BuildConfig.TUNNEL_TOKEN
+    // The Phoenix Ed25519 public key (raw 32 bytes, base64, no padding).
+    // A public key is not a secret, so it ships inside the app: every
+    // signed job verifies against it out of the box, including the
+    // firebase_token delivery, with no pairing step gating setup.
+    // Pairing can still store the same key per device; verification
+    // falls back to this baked key whenever nothing is stored.
+    const val PHOENIX_PUBLIC_KEY = "AMW5c64fBaSMK4Tp7sL1qu/J1hIAlzvVKbr0TOu9mrw"
     const val FIREBASE_RTDB_URL = "https://agentlink-84609-default-rtdb.firebaseio.com"
     // Web API key of the same Firebase project: public client config,
     // used only to exchange the Phoenix-minted custom token for an ID

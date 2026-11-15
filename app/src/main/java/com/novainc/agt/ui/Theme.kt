@@ -29,4 +29,16 @@ fun formatHms(totalMs: Long): String {
     return "%02d:%02d:%02d".format(h, m, s)
 }
 
+/** The design's uptime form: "6d 14:22:08" once past a day, plain
+ * "14:22:08" inside the first day. */
+fun formatDuration(totalMs: Long): String {
+    val totalSec = (totalMs / 1000).coerceAtLeast(0)
+    val days = totalSec / 86400
+    return if (days > 0) "${days}d ${formatHms(totalMs % 86_400_000)}" else formatHms(totalMs)
+}
+
 fun formatGb(v: Double): String = "%.1f".format(v)
+
+/** A measured latency for the legs card: "38 ms". Null (never
+ * measured) renders empty so the UI shows the state alone. */
+fun formatLatency(ms: Long?): String = if (ms == null) "" else "$ms ms"
