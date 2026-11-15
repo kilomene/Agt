@@ -69,7 +69,7 @@ class AgtMessagingService : FirebaseMessagingService() {
         val (title, body) = FcmPayload.resolve(
             data, message.notification?.title, message.notification?.body
         )
-        AlertNotifier.notify(applicationContext, title, body)
+        AlertNotifier.notify(applicationContext, title, body, data["kind"] ?: "alert")
         if (data["type"] == "wake") {
             AgtService.start(applicationContext)
         }

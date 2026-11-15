@@ -250,3 +250,47 @@ the app by hand. Done in that shape:
 - Still phone-bound: an FCM push can only land once the app is
   installed and has registered its token. Everything server-side is
   built and proven up to that exact boundary.
+
+## Sensitivity and notifications round (2026-11-15, v1.2.0)
+
+Owner order: more notification types, and the host must be extremely
+sensitive and responsive in foreground and background, with the wake
+lock truly working and everything in real time.
+
+Notifications are now a catalogue (core/NotifyKind.kt, unit tested):
+five kinds, each owning its own Android channel with its own
+importance, so the owner can tune each family in system settings.
+- critical (HIGH): the host is hurt. Deployment crash and restart,
+  tunnel down.
+- alert (HIGH): Phoenix pushed alerts (FCM or the RTDB doorbell, both
+  carry a kind field now) and job failures.
+- security (HIGH): pairing succeeded or failed, rejected signatures.
+- job (DEFAULT): agent job completions.
+- status (LOW, silent): recoveries. Deployment back up, tunnel back up.
+Every notification uses expanded big text and carries an Open AGT
+action. Phoenix side, fcm_send.py gained a --kind flag.
+
+Responsiveness:
+- The job poll loop no longer sleeps blindly for 15 seconds: it waits
+  in 250ms slices, and a doorbell ring or FCM wake calls
+  JobEngine.requestPoll(), cutting pickup to about a quarter second.
+  pollJobsOnce() is a real trigger now, not a comment.
+- Job lifecycle events feed the catalogue: done, failed (with the
+  error text), pairing outcomes as security events.
+
+Wake lock and persistence:
+- The heartbeat now verifies the wake lock every 30 seconds and
+  re-acquires it on the spot if the system ever dropped it, logging
+  the re-acquisition. The lock state already rides every heartbeat
+  line and the Settings host card.
+- The service has three comeback roads: START_STICKY, a boot
+  receiver, and a new one-second restart alarm (RestartReceiver)
+  scheduled on task removal and on destroy. All three respect the
+  owner's deliberate stop (AgtService.userStopped), so swiping the app
+  away or a system kill is a blink, while a real stop stays stopped.
+- The persistent foreground notification is a live instrument now:
+  every heartbeat refreshes its line with the running deployment
+  count and tunnel state.
+- Battery exemption was already in place (permission, status and the
+  request button on Home); MIUI autostart remains a phone-side toggle
+  the owner controls.

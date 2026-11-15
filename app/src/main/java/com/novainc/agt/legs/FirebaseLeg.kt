@@ -49,7 +49,7 @@ class FirebaseLeg(private val store: AgtStore) {
     /** Phoenix can push an instant alert to this phone by writing
      * {"at": <ms>, "title": "...", "message": "..."} to the alert node.
      * It lands as a high importance notification via AlertNotifier. */
-    var onAlert: ((title: String, message: String) -> Unit)? = null
+    var onAlert: ((title: String, message: String, kind: String) -> Unit)? = null
     private var lastWake: Long = 0
     private var lastAlert: Long = 0
 
@@ -164,12 +164,12 @@ class FirebaseLeg(private val store: AgtStore) {
             val alert = parseAlert(text) ?: return
             if (alert.at > lastAlert) {
                 lastAlert = alert.at
-                onAlert?.invoke(alert.title, alert.message)
+                onAlert?.invoke(alert.title, alert.message, alert.kind)
             }
         }
     }
 
-    data class Alert(val at: Long, val title: String, val message: String)
+    data class Alert(val at: Long, val title: String, val message: String, val kind: String = "alert")
 
     companion object {
         /** Parse an alert node body; null for empty or malformed input.
@@ -181,7 +181,8 @@ class FirebaseLeg(private val store: AgtStore) {
                 val at = obj.get("at")?.takeIf { it.isJsonPrimitive }?.asLong ?: return null
                 val title = obj.get("title")?.takeIf { it.isJsonPrimitive }?.asString ?: "AGT alert"
                 val message = obj.get("message")?.takeIf { it.isJsonPrimitive }?.asString ?: ""
-                Alert(at, title, message)
+                val kind = obj.get("kind")?.takeIf { it.isJsonPrimitive }?.asString ?: "alert"
+                Alert(at, title, message, kind)
             } catch (e: Exception) {
                 null
             }

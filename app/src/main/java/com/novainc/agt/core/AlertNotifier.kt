@@ -12,49 +12,73 @@ import com.novainc.agt.R
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Instant on-phone alerts: the moment the supervisor sees a deployment
- * die or come back, or the tunnel drops or reconnects, the owner hears
- * about it on the lock screen without opening the app. Phoenix can also
- * push an alert through the Firebase doorbell node and it lands here.
+ * Instant on-phone alerts, organized by the NotifyKind catalogue: the
+ * moment the supervisor sees a deployment die or come back, the tunnel
+ * drops or reconnects, a job finishes or fails, or Phoenix pushes an
+ * alert through FCM or the Firebase doorbell, the owner hears about it
+ * on the lock screen without opening the app, on the channel that
+ * matches the event's weight.
  *
  * This is deliberately local-first: the phone IS the server, so the
- * phone is the first to know when something changes, and a local high
- * importance notification is the fastest possible alert on the device.
+ * phone is the first to know when something changes, and a local
+ * notification is the fastest possible alert on the device.
  */
 object AlertNotifier {
-    const val CHANNEL_ID = "agt_alerts"
+    const val CHANNEL_ID = NotifyKind.CHANNEL_ALERTS
     private val nextId = AtomicInteger(2000)
 
-    fun ensureChannel(context: Context) {
+    private data class ChannelSpec(val id: String, val name: String, val importance: Int, val description: String)
+
+    private val CHANNELS = listOf(
+        ChannelSpec(NotifyKind.CHANNEL_CRITICAL, "AGT critical", NotificationManager.IMPORTANCE_HIGH,
+            "The host is hurt: crash loops, tunnel down"),
+        ChannelSpec(NotifyKind.CHANNEL_ALERTS, "AGT alerts", NotificationManager.IMPORTANCE_HIGH,
+            "Phoenix alerts and job failures"),
+        ChannelSpec(NotifyKind.CHANNEL_SECURITY, "AGT security", NotificationManager.IMPORTANCE_HIGH,
+            "Pairing events and rejected signatures"),
+        ChannelSpec(NotifyKind.CHANNEL_JOBS, "AGT jobs", NotificationManager.IMPORTANCE_DEFAULT,
+            "Agent job completions"),
+        ChannelSpec(NotifyKind.CHANNEL_STATUS, "AGT status", NotificationManager.IMPORTANCE_LOW,
+            "Recoveries and quiet state changes")
+    )
+
+    fun ensureChannel(context: Context) = ensureChannels(context)
+
+    fun ensureChannels(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val nm = context.getSystemService(NotificationManager::class.java) ?: return
-            if (nm.getNotificationChannel(CHANNEL_ID) == null) {
-                val channel = NotificationChannel(
-                    CHANNEL_ID, "AGT alerts", NotificationManager.IMPORTANCE_HIGH
-                ).apply {
-                    description = "Server down, back up, and deployment events"
-                    enableVibration(true)
+            for (spec in CHANNELS) {
+                if (nm.getNotificationChannel(spec.id) == null) {
+                    val channel = NotificationChannel(spec.id, spec.name, spec.importance).apply {
+                        description = spec.description
+                        enableVibration(spec.importance >= NotificationManager.IMPORTANCE_HIGH)
+                    }
+                    nm.createNotificationChannel(channel)
                 }
-                nm.createNotificationChannel(channel)
             }
         }
     }
 
-    fun notify(context: Context, title: String, text: String) {
-        ensureChannel(context)
+    fun notify(context: Context, title: String, text: String, kind: String? = NotifyKind.ALERT) {
+        ensureChannels(context)
+        val channelId = NotifyKind.channelFor(kind)
         val openIntent = PendingIntent.getActivity(
             context, 0,
             Intent(context, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
-        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+        val priority = if (NotifyKind.isHigh(kind)) NotificationCompat.PRIORITY_HIGH
+            else if (channelId == NotifyKind.CHANNEL_STATUS) NotificationCompat.PRIORITY_LOW
+            else NotificationCompat.PRIORITY_DEFAULT
+        val notification = NotificationCompat.Builder(context, channelId)
             .setContentTitle(title)
             .setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
             .setSmallIcon(R.drawable.ic_stat_agt)
             .setContentIntent(openIntent)
+            .addAction(R.drawable.ic_stat_agt, "Open AGT", openIntent)
             .setAutoCancel(true)
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setPriority(priority)
             .build()
         val nm = context.getSystemService(NotificationManager::class.java) ?: return
         try {

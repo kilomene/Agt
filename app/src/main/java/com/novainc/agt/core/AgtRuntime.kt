@@ -113,8 +113,16 @@ class AgtRuntime private constructor(private val context: Context) {
         if (alertsWired) return
         alertsWired = true
         val appContext = context.applicationContext
-        supervisor.onEvent = { title, text -> AlertNotifier.notify(appContext, title, text) }
-        firebase.onAlert = { title, message -> AlertNotifier.notify(appContext, title, message) }
+        supervisor.onEvent = { title, text ->
+            val kind = when {
+                title.contains("down") -> NotifyKind.CRITICAL
+                title.contains("back up") -> NotifyKind.STATUS
+                else -> NotifyKind.ALERT
+            }
+            AlertNotifier.notify(appContext, title, text, kind)
+        }
+        firebase.onAlert = { title, message, kind -> AlertNotifier.notify(appContext, title, message, kind) }
+        jobEngine.onJobEvent = { kind, title, text -> AlertNotifier.notify(appContext, title, text, kind) }
         scope.launch {
             var prev: TunnelLeg.State? = null
             while (isActive) {
@@ -125,11 +133,13 @@ class AgtRuntime private constructor(private val context: Context) {
                     when {
                         s == TunnelLeg.State.ERROR -> AlertNotifier.notify(
                             appContext, "Tunnel down",
-                            "The Cloudflare tunnel dropped. AGT is reconnecting on its own."
+                            "The Cloudflare tunnel dropped. AGT is reconnecting on its own.",
+                            NotifyKind.CRITICAL
                         )
                         s == TunnelLeg.State.CONNECTED && p == TunnelLeg.State.ERROR -> AlertNotifier.notify(
                             appContext, "Tunnel back up",
-                            "The Cloudflare tunnel reconnected. The host is reachable again."
+                            "The Cloudflare tunnel reconnected. The host is reachable again.",
+                            NotifyKind.STATUS
                         )
                     }
                 }
@@ -192,8 +202,10 @@ class AgtRuntime private constructor(private val context: Context) {
     }
 
     private suspend fun pollJobsOnce() {
-        // A doorbell ring just wakes the normal poll loop; the loop runs
-        // every 15s anyway, so nothing extra is needed here.
+        // A doorbell ring cuts the job poll loop's sleep short: queued
+        // jobs are picked up within about 250ms of the ring instead of
+        // waiting out the 15 second cycle.
+        jobEngine.requestPoll()
     }
 
     fun stopAll() {

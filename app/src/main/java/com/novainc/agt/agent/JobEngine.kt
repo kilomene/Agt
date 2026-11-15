@@ -4,6 +4,7 @@ import com.google.gson.Gson
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.novainc.agt.core.AgtStore
+import com.novainc.agt.core.NotifyKind
 import com.novainc.agt.core.JobFeedEntry
 import com.novainc.agt.deploy.DeploymentEngine
 import com.novainc.agt.deploy.Templates
@@ -37,6 +38,19 @@ class JobEngine(
     private var loop: Job? = null
     var hostId: String? = null
 
+    /** Job lifecycle events for the notification catalogue, wired by
+     * the runtime: (kind, title, text). */
+    var onJobEvent: ((kind: String, title: String, text: String) -> Unit)? = null
+
+    private val pollRequested = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** Wake the poll loop NOW instead of waiting out the 15 second
+     * cycle: a doorbell ring or an FCM wake lands here and the queued
+     * jobs are picked up within a quarter second. */
+    fun requestPoll() {
+        pollRequested.set(true)
+    }
+
     fun start(scope: CoroutineScope) {
         loop?.cancel()
         loop = scope.launch(Dispatchers.IO) {
@@ -50,7 +64,15 @@ class JobEngine(
                 } catch (e: Exception) {
                     // Poll failure is not fatal: the next cycle retries.
                 }
-                delay(15_000)
+                // Sleep in short slices so a doorbell ring cuts the
+                // wait short: worst case pickup stays 15s, rung pickup
+                // is about 250ms.
+                var waited = 0L
+                while (waited < 15_000 && !pollRequested.get()) {
+                    delay(250)
+                    waited += 250
+                }
+                pollRequested.set(false)
             }
         }
     }
@@ -77,12 +99,24 @@ class JobEngine(
             }
             supabase.completeJob(jobId, result)
             store.addJob(JobFeedEntry(UUID.randomUUID().toString(), kind, "done", summarize(kind, result)))
+            val err = result.get("error")?.takeIf { !it.isJsonNull }?.asString
+            when {
+                err != null && kind == "pair" -> onJobEvent?.invoke(
+                    NotifyKind.SECURITY, "Pairing failed", err)
+                err != null -> onJobEvent?.invoke(
+                    NotifyKind.ALERT, "Job failed: $kind", err)
+                kind == "pair" -> onJobEvent?.invoke(
+                    NotifyKind.SECURITY, "Phone paired", "Phoenix is paired with this phone.")
+                else -> onJobEvent?.invoke(
+                    NotifyKind.JOB, "Job done: $kind", summarize(kind, result))
+            }
         } catch (e: Exception) {
             try {
                 supabase.failJob(jobId, e.message ?: "job failed")
             } catch (ignored: Exception) {
             }
             store.addJob(JobFeedEntry(UUID.randomUUID().toString(), kind, "failed", e.message ?: "job failed"))
+            onJobEvent?.invoke(NotifyKind.ALERT, "Job failed: $kind", e.message ?: "job failed")
         }
     }
 

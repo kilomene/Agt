@@ -1,5 +1,6 @@
 package com.novainc.agt.core
 
+import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -96,10 +97,28 @@ class AgtService : Service() {
                     val legs = "tunnel=${runtime.tunnel.state.value} " +
                         "firebase=${runtime.firebase.state.value} " +
                         "supabase=${if (runtime.supabase.configured) "ready" else "not-configured"}"
+                    // The wake lock is the host's lifeline: verify it
+                    // every beat and re-acquire on the spot if the
+                    // system ever dropped it.
+                    if (wakeLock?.isHeld != true) {
+                        acquireWakeLock()
+                        HeartbeatLog.append(applicationContext, "wake lock re-acquired")
+                    }
                     HeartbeatLog.append(
                         applicationContext,
                         "heartbeat #$beat  uptime ${upSec}s  link ${networkMonitor?.reconnector?.state?.value}  wakelock=${if (_wakeLockHeld.value) "held" else "off"}  $legs"
                     )
+                    // The persistent notification is a live instrument,
+                    // not a static label: refresh its line every beat.
+                    try {
+                        val deployments = runtime.store.loadDeployments()
+                        val runningCount = deployments.count { it.status == "running" }
+                        val line = WidgetStatus.statusLine(true, runningCount, deployments.size) +
+                            ". Tunnel " + runtime.tunnel.state.value.name.lowercase() + "."
+                        val nm = getSystemService(NotificationManager::class.java)
+                        nm?.notify(NOTIFICATION_ID, buildNotification(line))
+                    } catch (e: Exception) {
+                    }
                     com.novainc.agt.ui.AgtWidget.updateAll(applicationContext)
                     delay(HEARTBEAT_MS)
                 }
@@ -108,7 +127,36 @@ class AgtService : Service() {
         return START_STICKY
     }
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        // Swiped away from recents is not a stop order: schedule the
+        // comeback before Android finishes tearing the task down.
+        if (!userStopped) scheduleRestart()
+        super.onTaskRemoved(rootIntent)
+    }
+
+    /**
+     * One-second comeback alarm, fired through RestartReceiver. Set on
+     * task removal and on destroy (unless the owner stopped the host
+     * deliberately), so a system kill is a blink, not an outage.
+     */
+    private fun scheduleRestart() {
+        try {
+            val am = getSystemService(AlarmManager::class.java) ?: return
+            val intent = Intent(applicationContext, RestartReceiver::class.java)
+            val pending = PendingIntent.getBroadcast(
+                applicationContext, 0, intent,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+            am.setAndAllowWhileIdle(
+                AlarmManager.RTC_WAKEUP, System.currentTimeMillis() + 1000, pending
+            )
+            HeartbeatLog.append(applicationContext, "restart scheduled")
+        } catch (e: Exception) {
+        }
+    }
+
     override fun onDestroy() {
+        if (!userStopped) scheduleRestart()
         HeartbeatLog.append(applicationContext, "service stopped")
         _running.value = false
         releaseWakeLock()
@@ -133,7 +181,7 @@ class AgtService : Service() {
         }
     }
 
-    private fun buildNotification(): Notification {
+    private fun buildNotification(text: String = "Host online. Serving in the background."): Notification {
         val openIntent = PendingIntent.getActivity(
             this, 0,
             Intent(this, MainActivity::class.java),
@@ -141,7 +189,7 @@ class AgtService : Service() {
         )
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Agt is running")
-            .setContentText("Host online. Serving in the background.")
+            .setContentText(text)
             .setSmallIcon(R.drawable.ic_stat_agt)
             .setContentIntent(openIntent)
             .setOngoing(true)
@@ -166,7 +214,13 @@ class AgtService : Service() {
         var network: NetworkMonitor? = null
             private set
 
+        /** True only when the owner deliberately stopped the host;
+         * every comeback road (sticky, alarm, boot) respects it. */
+        @Volatile
+        var userStopped: Boolean = false
+
         fun start(context: Context) {
+            userStopped = false
             val intent = Intent(context.applicationContext, AgtService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.applicationContext.startForegroundService(intent)
@@ -176,6 +230,7 @@ class AgtService : Service() {
         }
 
         fun stop(context: Context) {
+            userStopped = true
             context.applicationContext.stopService(
                 Intent(context.applicationContext, AgtService::class.java)
             )

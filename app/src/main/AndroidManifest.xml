@@ -60,6 +60,11 @@
         </receiver>
 
         <receiver
+            android:name=".core.RestartReceiver"
+            android:enabled="true"
+            android:exported="false" />
+
+        <receiver
             android:name=".core.BootReceiver"
             android:enabled="true"
             android:exported="true">
