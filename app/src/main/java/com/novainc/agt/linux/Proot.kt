@@ -34,7 +34,7 @@ class Proot(private val context: Context, private val store: AgtStore) {
         get() = File(store.linuxDir(), "rootfs")
 
     val tmpDir: File
-        get() = File(context.cacheDir, "proot-tmp").apply { mkdirs() }
+        get() = File(context.filesDir, "proot-tmp").apply { mkdirs() }
 
     val supported: Boolean
         get() = Build.SUPPORTED_ABIS.contains("arm64-v8a")
@@ -42,10 +42,27 @@ class Proot(private val context: Context, private val store: AgtStore) {
     fun isInstalled(): Boolean {
         val settings = store.loadSettings()
         if (!settings.linuxReady) return false
-        if (!File(rootfsDir, "bin/bash").exists()) return false
-        if (!File(rootfsDir, "usr/bin/python3").exists()) return false
+        if (settings.rootfsVersion != AgtConfig.ROOTFS_VERSION) return false
+        return treeIntact()
+    }
+
+    /** Integrity of the extracted tree, checked the way the guest
+     * itself will use it. The v1.6.0 extractor wrote Debian's
+     * symlinks as empty regular files: the paths existed, so the old
+     * existence-only check called the tree ready, but bash could not
+     * start because its loader chain ran through those dead files.
+     * The shipped rootfs also lacks /lib/ld-linux-aarch64.so.1, the
+     * interpreter path every ELF in the tree requests (the loader
+     * itself lives under /usr/lib); install() creates that link, and
+     * a tree without it resolving to the real loader binary is not
+     * installed, whatever the settings flag says. */
+    fun treeIntact(): Boolean {
+        if (!isSymlink(File(rootfsDir, "bin"))) return false
+        if (!isSymlink(File(rootfsDir, "usr/bin/python3"))) return false
+        if (File(rootfsDir, "usr/bin/bash").length() < 100_000) return false
         if (!File(rootfsDir, "usr/bin/node").exists()) return false
-        return settings.rootfsVersion == AgtConfig.ROOTFS_VERSION
+        val loader = File(rootfsDir, "lib/ld-linux-aarch64.so.1")
+        return loader.exists() && loader.length() > 100_000
     }
 
     /**
@@ -93,6 +110,24 @@ class Proot(private val context: Context, private val store: AgtStore) {
                 File(rootfsDir, "etc/apt/apt.conf.d/99agt").apply {
                     parentFile?.mkdirs()
                     writeText("APT::Sandbox::User \"root\";\n")
+                }
+                // The shipped rootfs has no /lib/ld-linux-aarch64.so.1,
+                // the interpreter every ELF in the tree names in its
+                // header; the loader binary sits under /usr/lib. Link
+                // the expected path to it, or no guest program, bash
+                // included, can ever start (execve reports a plain
+                // "No such file or directory" for the program itself).
+                val loaderLink = File(rootfsDir, "lib/ld-linux-aarch64.so.1")
+                loaderLink.parentFile?.mkdirs()
+                removePath(loaderLink)
+                android.system.Os.symlink(
+                    "../usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1",
+                    loaderLink.path
+                )
+                if (!treeIntact()) {
+                    return@withContext Result.failure(
+                        IllegalStateException("Linux tree failed its integrity check after extraction")
+                    )
                 }
                 val settings = store.loadSettings()
                 store.saveSettings(

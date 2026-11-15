@@ -550,3 +550,26 @@ the dead row now carries the phone's real device_id
 keeper can deliver the key without waiting for the reinstall. App fix
 in v1.6.1: the host name now carries the device id at both upsert
 call sites, so no future install can collide on the name again.
+
+v1.6.2 (2026-11-15): the Linux layer could still not start after
+v1.6.1, and the owner's console photo showed why: proot reported
+execve("/usr/bin/bash"): No such file or directory. Two stacked
+causes, both proven against the shipped tar itself. First, the tree
+already on the phone was extracted by the v1.6.0 extractor, which
+wrote Debian's symlinks as empty files; the old isInstalled() only
+checked that paths exist, so the corrupt tree passed as VM READY
+forever and was never re-extracted. Second, the rootfs tar itself
+contains no /lib/ld-linux-aarch64.so.1, the interpreter path named
+in every ELF header in the tree (the loader binary lives at
+/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1, 202,912 bytes), so
+even a perfect extraction could not start bash. Fixes: isInstalled()
+now runs treeIntact() (bin and usr/bin/python3 must be real
+symlinks, bash must be a real binary, the loader path must resolve
+to the real loader), install() creates the /lib loader symlink
+during guest setup and refuses to mark the tree ready unless it
+passes integrity, and proot's temp dir moved from cacheDir (which
+Android can purge mid-run; the phone showed proot failing to chmod
+its own temp file there) to filesDir. A corrupt leftover tree now
+fails the check at startup, is wiped, and is re-extracted clean
+with the link in place, no network needed (the rootfs ships inside
+the APK).
