@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -32,30 +33,51 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.novainc.agt.core.HeartbeatLog
+import com.novainc.agt.core.AgtRuntime
+import com.novainc.agt.core.ProcessRecord
 import kotlinx.coroutines.delay
 
 /**
- * The service console: the real heartbeat log written by AgtService every
- * 30 seconds, streamed into the screen every 2 seconds. What is shown here
- * is the service's own record, read from its file.
+ * The Linux console: a live shell session inside the Debian rootfs plus
+ * the process list. The shell is a real bash running under PRoot; every
+ * line typed here runs in the guest, and the output streams back live.
  */
 @Composable
 fun ConsoleScreen(onBack: () -> Unit) {
     val context = LocalContext.current
-    var lines by remember { mutableStateOf<List<String>>(emptyList()) }
+    val runtime = remember { AgtRuntime.get(context) }
+    var output by remember { mutableStateOf("") }
+    var input by remember { mutableStateOf("") }
+    var processes by remember { mutableStateOf<List<ProcessRecord>>(emptyList()) }
+    var shellReady by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
 
-    LaunchedEffect(Unit) {
-        while (true) {
-            lines = HeartbeatLog.readLines(context)
-            delay(2000)
+    val session = remember {
+        if (runtime.proot.isInstalled()) {
+            try {
+                runtime.proot.startShell()
+            } catch (e: Exception) {
+                null
+            }
+        } else {
+            null
         }
     }
-    LaunchedEffect(lines.size) {
-        if (lines.isNotEmpty()) {
-            listState.animateScrollToItem(lines.size - 1)
+    DisposableEffect(Unit) {
+        onDispose { session?.close() }
+    }
+
+    LaunchedEffect(Unit) {
+        shellReady = session?.alive == true
+        while (true) {
+            output = session?.snapshot() ?: ""
+            processes = runtime.store.loadProcesses()
+            shellReady = session?.alive == true
+            delay(500)
         }
+    }
+    LaunchedEffect(output.length) {
+        // Keep the tail visible as the shell prints.
     }
 
     Column(
@@ -67,8 +89,11 @@ fun ConsoleScreen(onBack: () -> Unit) {
             LineIcon(IconKind.Console, AgtColors.Gold, Modifier.size(24.dp))
             Spacer(Modifier.width(10.dp))
             Column {
-                Text("Service console", color = AgtColors.TextPrimary, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                Text("Live heartbeat log from AgtService", color = AgtColors.TextDim, fontSize = 12.sp)
+                Text("Linux console", color = AgtColors.TextPrimary, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                Text(
+                    if (runtime.proot.isInstalled()) "Debian bookworm under PRoot" else "Linux not installed yet",
+                    color = AgtColors.TextDim, fontSize = 12.sp
+                )
             }
             Spacer(Modifier.weight(1f))
             OutlinedButton(onClick = onBack) { Text("Back", color = AgtColors.GoldSoft) }
@@ -83,24 +108,90 @@ fun ConsoleScreen(onBack: () -> Unit) {
                 .border(1.dp, AgtColors.Stroke, RoundedCornerShape(16.dp))
                 .padding(14.dp)
         ) {
-            if (lines.isEmpty()) {
+            if (session == null) {
                 Text(
-                    "No heartbeats yet. Start the service on the Home screen and this console fills with its real heartbeat lines.",
+                    "Install the Linux layer from the Home screen first, then this console opens a real shell inside Debian.",
                     color = AgtColors.TextDim, fontSize = 13.sp
                 )
             } else {
-                LazyColumn(state = listState) {
-                    items(lines) { line ->
-                        Text(
-                            line,
-                            color = AgtColors.TextPrimary,
-                            fontSize = 11.5.sp,
-                            fontFamily = FontFamily.Monospace,
-                            modifier = Modifier.padding(vertical = 2.dp)
+                Column(Modifier.fillMaxSize()) {
+                    Box(Modifier.weight(1f)) {
+                        LazyColumn(state = listState) {
+                            items(output.split("\n")) { line ->
+                                Text(
+                                    line.ifEmpty { " " },
+                                    color = AgtColors.TextPrimary,
+                                    fontSize = 11.5.sp,
+                                    fontFamily = FontFamily.Monospace
+                                )
+                            }
+                        }
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("$ ", color = AgtColors.Gold, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
+                        Spacer(Modifier.width(6.dp))
+                        androidx.compose.foundation.text.BasicTextField(
+                            value = input,
+                            onValueChange = { input = it },
+                            singleLine = true,
+                            textStyle = androidx.compose.ui.text.TextStyle(
+                                color = AgtColors.TextPrimary, fontSize = 13.sp,
+                                fontFamily = FontFamily.Monospace
+                            ),
+                            cursorBrush = androidx.compose.ui.graphics.SolidColor(AgtColors.Gold),
+                            modifier = Modifier.weight(1f),
+                            keyboardActions = androidx.compose.foundation.text.KeyboardActions(
+                                onDone = {
+                                    session.send(input)
+                                    input = ""
+                                }
+                            ),
+                            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                                imeAction = androidx.compose.ui.text.input.ImeAction.Done
+                            )
                         )
+                        Spacer(Modifier.width(8.dp))
+                        GoldButton("Run", onClick = {
+                            session.send(input)
+                            input = ""
+                        })
                     }
                 }
             }
+        }
+        Spacer(Modifier.height(12.dp))
+        SectionTitle("PROCESSES")
+        Spacer(Modifier.height(8.dp))
+        if (processes.isEmpty()) {
+            EmptyState("No processes yet. Start a deployment and it appears here.")
+        }
+        for (p in processes) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(AgtColors.Surface)
+                    .border(1.dp, AgtColors.Stroke, RoundedCornerShape(12.dp))
+                    .padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .clip(androidx.compose.foundation.shape.CircleShape)
+                        .background(if (p.status == "running") AgtColors.Emerald else AgtColors.TextDim)
+                )
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(p.name, color = AgtColors.TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                    Text(p.command, color = AgtColors.TextDim, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                }
+                Text(
+                    if (p.restarts > 0) "restarted ${p.restarts}x" else p.status,
+                    color = AgtColors.TextDim, fontSize = 11.sp
+                )
+            }
+            Spacer(Modifier.height(8.dp))
         }
     }
 }
