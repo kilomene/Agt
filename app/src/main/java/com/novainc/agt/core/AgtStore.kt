@@ -20,6 +20,7 @@ data class Deployment(
     val env: Map<String, String> = emptyMap(),
     val port: Int = 0,
     val autoRestart: Boolean = true,
+    val batteryGuard: Boolean = false,
     val status: String = "stopped",
     val createdAt: Long = System.currentTimeMillis()
 )

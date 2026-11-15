@@ -17,7 +17,10 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 enum class IconKind {
     Bolt, Cloud, Database, Shield, Pulse, Battery, Storage, Memory, Clock, Console,
     Bell, Flame, Home, Layers, Squares, Lock, Refresh, Grid, Plus, Download,
-    Cpu, Thermometer, Signal
+    Cpu, Thermometer, Signal,
+    Send, Chat, Robot, Globe, Gamepad, Coin, Gauge, Search, Key, Gear,
+    ChevronLeft, ChevronRight, ChevronUp, ChevronDown, Check, Upload, Branch,
+    Play, Server, Square, Close
 }
 
 @Composable
@@ -352,6 +355,220 @@ fun LineIcon(kind: IconKind, color: Color, modifier: Modifier = Modifier) {
                         strokeWidth = w * 0.1f
                     )
                 }
+            }
+            IconKind.Send -> {
+                val p = Path().apply {
+                    moveTo(w * 0.12f, h * 0.52f)
+                    lineTo(w * 0.88f, h * 0.12f)
+                    lineTo(w * 0.6f, h * 0.88f)
+                    lineTo(w * 0.46f, h * 0.6f)
+                    close()
+                }
+                drawPath(p, color, style = stroke)
+                drawLine(color, Offset(w * 0.46f, h * 0.6f), Offset(w * 0.88f, h * 0.12f), strokeWidth = w * 0.07f)
+            }
+            IconKind.Chat -> {
+                drawRoundRect(
+                    color = color,
+                    topLeft = Offset(w * 0.1f, h * 0.14f),
+                    size = Size(w * 0.8f, h * 0.58f),
+                    cornerRadius = CornerRadius(w * 0.12f),
+                    style = stroke
+                )
+                val tail = Path().apply {
+                    moveTo(w * 0.3f, h * 0.72f)
+                    lineTo(w * 0.3f, h * 0.9f)
+                    lineTo(w * 0.5f, h * 0.72f)
+                }
+                drawPath(tail, color, style = stroke)
+                for (i in 0..2) {
+                    drawCircle(color = color, center = Offset(w * (0.3f + i * 0.2f), h * 0.43f), radius = w * 0.045f)
+                }
+            }
+            IconKind.Robot -> {
+                drawLine(color, Offset(w * 0.5f, h * 0.2f), Offset(w * 0.5f, h * 0.08f), strokeWidth = w * 0.07f)
+                drawCircle(color = color, center = Offset(w * 0.5f, h * 0.06f), radius = w * 0.04f)
+                drawRoundRect(
+                    color = color,
+                    topLeft = Offset(w * 0.16f, h * 0.2f),
+                    size = Size(w * 0.68f, h * 0.52f),
+                    cornerRadius = CornerRadius(w * 0.1f),
+                    style = stroke
+                )
+                drawRect(color = color, topLeft = Offset(w * 0.05f, h * 0.38f), size = Size(w * 0.11f, h * 0.2f), style = stroke)
+                drawRect(color = color, topLeft = Offset(w * 0.84f, h * 0.38f), size = Size(w * 0.11f, h * 0.2f), style = stroke)
+                drawCircle(color = color, center = Offset(w * 0.36f, h * 0.44f), radius = w * 0.05f)
+                drawCircle(color = color, center = Offset(w * 0.64f, h * 0.44f), radius = w * 0.05f)
+                drawLine(color, Offset(w * 0.38f, h * 0.6f), Offset(w * 0.62f, h * 0.6f), strokeWidth = w * 0.07f)
+                drawLine(color, Offset(w * 0.3f, h * 0.86f), Offset(w * 0.7f, h * 0.86f), strokeWidth = w * 0.07f)
+            }
+            IconKind.Globe -> {
+                drawCircle(color = color, center = Offset(w / 2, h / 2), radius = w * 0.4f, style = stroke)
+                val left = Path().apply {
+                    moveTo(w * 0.5f, h * 0.1f)
+                    cubicTo(w * 0.28f, h * 0.3f, w * 0.28f, h * 0.7f, w * 0.5f, h * 0.9f)
+                }
+                drawPath(left, color, style = stroke)
+                val right = Path().apply {
+                    moveTo(w * 0.5f, h * 0.1f)
+                    cubicTo(w * 0.72f, h * 0.3f, w * 0.72f, h * 0.7f, w * 0.5f, h * 0.9f)
+                }
+                drawPath(right, color, style = stroke)
+                drawLine(color, Offset(w * 0.12f, h * 0.5f), Offset(w * 0.88f, h * 0.5f), strokeWidth = w * 0.07f)
+            }
+            IconKind.Gamepad -> {
+                drawRoundRect(
+                    color = color,
+                    topLeft = Offset(w * 0.06f, h * 0.28f),
+                    size = Size(w * 0.88f, h * 0.46f),
+                    cornerRadius = CornerRadius(w * 0.2f),
+                    style = stroke
+                )
+                drawLine(color, Offset(w * 0.28f, h * 0.4f), Offset(w * 0.28f, h * 0.62f), strokeWidth = w * 0.07f)
+                drawLine(color, Offset(w * 0.17f, h * 0.51f), Offset(w * 0.39f, h * 0.51f), strokeWidth = w * 0.07f)
+                drawCircle(color = color, center = Offset(w * 0.68f, h * 0.44f), radius = w * 0.045f)
+                drawCircle(color = color, center = Offset(w * 0.8f, h * 0.57f), radius = w * 0.045f)
+            }
+            IconKind.Coin -> {
+                drawCircle(color = color, center = Offset(w / 2, h / 2), radius = w * 0.4f, style = stroke)
+                drawCircle(color = color, center = Offset(w / 2, h / 2), radius = w * 0.25f, style = stroke)
+                drawLine(color, Offset(w * 0.5f, h * 0.32f), Offset(w * 0.5f, h * 0.42f), strokeWidth = w * 0.06f)
+                drawLine(color, Offset(w * 0.5f, h * 0.58f), Offset(w * 0.5f, h * 0.68f), strokeWidth = w * 0.06f)
+            }
+            IconKind.Gauge -> {
+                val arc = Path().apply {
+                    moveTo(w * 0.12f, h * 0.74f)
+                    cubicTo(w * 0.16f, h * 0.32f, w * 0.84f, h * 0.32f, w * 0.88f, h * 0.74f)
+                }
+                drawPath(arc, color, style = stroke)
+                drawLine(color, Offset(w * 0.5f, h * 0.7f), Offset(w * 0.68f, h * 0.44f), strokeWidth = w * 0.08f)
+                drawCircle(color = color, center = Offset(w * 0.5f, h * 0.7f), radius = w * 0.05f)
+                drawLine(color, Offset(w * 0.08f, h * 0.84f), Offset(w * 0.92f, h * 0.84f), strokeWidth = w * 0.07f)
+            }
+            IconKind.Search -> {
+                drawCircle(color = color, center = Offset(w * 0.44f, h * 0.44f), radius = w * 0.28f, style = stroke)
+                drawLine(color, Offset(w * 0.64f, h * 0.64f), Offset(w * 0.88f, h * 0.88f), strokeWidth = w * 0.09f)
+            }
+            IconKind.Key -> {
+                drawCircle(color = color, center = Offset(w * 0.34f, h * 0.66f), radius = w * 0.2f, style = stroke)
+                drawLine(color, Offset(w * 0.48f, h * 0.52f), Offset(w * 0.86f, h * 0.14f), strokeWidth = w * 0.08f)
+                drawLine(color, Offset(w * 0.66f, h * 0.34f), Offset(w * 0.78f, h * 0.46f), strokeWidth = w * 0.08f)
+                drawLine(color, Offset(w * 0.79f, h * 0.21f), Offset(w * 0.89f, h * 0.31f), strokeWidth = w * 0.08f)
+            }
+            IconKind.Gear -> {
+                drawCircle(color = color, center = Offset(w / 2, h / 2), radius = w * 0.17f, style = stroke)
+                for (i in 0..7) {
+                    val a = i * kotlin.math.PI / 4.0
+                    val c = kotlin.math.cos(a).toFloat()
+                    val s = kotlin.math.sin(a).toFloat()
+                    drawLine(
+                        color,
+                        Offset(w * (0.5f + 0.25f * c), h * (0.5f + 0.25f * s)),
+                        Offset(w * (0.5f + 0.4f * c), h * (0.5f + 0.4f * s)),
+                        strokeWidth = w * 0.08f
+                    )
+                }
+            }
+            IconKind.ChevronLeft -> {
+                val p = Path().apply {
+                    moveTo(w * 0.62f, h * 0.18f)
+                    lineTo(w * 0.34f, h * 0.5f)
+                    lineTo(w * 0.62f, h * 0.82f)
+                }
+                drawPath(p, color, style = stroke)
+            }
+            IconKind.ChevronRight -> {
+                val p = Path().apply {
+                    moveTo(w * 0.38f, h * 0.18f)
+                    lineTo(w * 0.66f, h * 0.5f)
+                    lineTo(w * 0.38f, h * 0.82f)
+                }
+                drawPath(p, color, style = stroke)
+            }
+            IconKind.ChevronUp -> {
+                val p = Path().apply {
+                    moveTo(w * 0.18f, h * 0.64f)
+                    lineTo(w * 0.5f, h * 0.36f)
+                    lineTo(w * 0.82f, h * 0.64f)
+                }
+                drawPath(p, color, style = stroke)
+            }
+            IconKind.ChevronDown -> {
+                val p = Path().apply {
+                    moveTo(w * 0.18f, h * 0.36f)
+                    lineTo(w * 0.5f, h * 0.64f)
+                    lineTo(w * 0.82f, h * 0.36f)
+                }
+                drawPath(p, color, style = stroke)
+            }
+            IconKind.Check -> {
+                val p = Path().apply {
+                    moveTo(w * 0.16f, h * 0.54f)
+                    lineTo(w * 0.4f, h * 0.78f)
+                    lineTo(w * 0.86f, h * 0.24f)
+                }
+                drawPath(p, color, style = stroke)
+            }
+            IconKind.Upload -> {
+                drawLine(color, Offset(w * 0.5f, h * 0.86f), Offset(w * 0.5f, h * 0.38f), strokeWidth = w * 0.08f)
+                val head = Path().apply {
+                    moveTo(w * 0.28f, h * 0.58f)
+                    lineTo(w * 0.5f, h * 0.34f)
+                    lineTo(w * 0.72f, h * 0.58f)
+                }
+                drawPath(head, color, style = stroke)
+                drawLine(color, Offset(w * 0.14f, h * 0.9f), Offset(w * 0.86f, h * 0.9f), strokeWidth = w * 0.08f)
+            }
+            IconKind.Branch -> {
+                drawCircle(color = color, center = Offset(w * 0.3f, h * 0.18f), radius = w * 0.09f, style = stroke)
+                drawCircle(color = color, center = Offset(w * 0.3f, h * 0.82f), radius = w * 0.09f, style = stroke)
+                drawCircle(color = color, center = Offset(w * 0.72f, h * 0.32f), radius = w * 0.09f, style = stroke)
+                drawLine(color, Offset(w * 0.3f, h * 0.27f), Offset(w * 0.3f, h * 0.73f), strokeWidth = w * 0.07f)
+                val curve = Path().apply {
+                    moveTo(w * 0.3f, h * 0.52f)
+                    cubicTo(w * 0.58f, h * 0.52f, w * 0.72f, h * 0.52f, w * 0.72f, h * 0.41f)
+                }
+                drawPath(curve, color, style = stroke)
+            }
+            IconKind.Play -> {
+                val p = Path().apply {
+                    moveTo(w * 0.34f, h * 0.22f)
+                    lineTo(w * 0.34f, h * 0.78f)
+                    lineTo(w * 0.76f, h * 0.5f)
+                    close()
+                }
+                drawPath(p, color, style = stroke)
+            }
+            IconKind.Close -> {
+                drawLine(color, Offset(w * 0.22f, h * 0.22f), Offset(w * 0.78f, h * 0.78f), strokeWidth = w * 0.09f)
+                drawLine(color, Offset(w * 0.78f, h * 0.22f), Offset(w * 0.22f, h * 0.78f), strokeWidth = w * 0.09f)
+            }
+            IconKind.Square -> {
+                drawRoundRect(
+                    color = color,
+                    topLeft = Offset(w * 0.28f, h * 0.28f),
+                    size = Size(w * 0.44f, h * 0.44f),
+                    cornerRadius = CornerRadius(w * 0.06f),
+                    style = stroke
+                )
+            }
+            IconKind.Server -> {
+                drawRoundRect(
+                    color = color,
+                    topLeft = Offset(w * 0.12f, h * 0.12f),
+                    size = Size(w * 0.76f, h * 0.32f),
+                    cornerRadius = CornerRadius(w * 0.07f),
+                    style = stroke
+                )
+                drawRoundRect(
+                    color = color,
+                    topLeft = Offset(w * 0.12f, h * 0.56f),
+                    size = Size(w * 0.76f, h * 0.32f),
+                    cornerRadius = CornerRadius(w * 0.07f),
+                    style = stroke
+                )
+                drawCircle(color = color, center = Offset(w * 0.27f, h * 0.28f), radius = w * 0.04f)
+                drawCircle(color = color, center = Offset(w * 0.27f, h * 0.72f), radius = w * 0.04f)
             }
         }
     }

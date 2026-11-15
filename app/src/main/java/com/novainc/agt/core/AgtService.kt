@@ -35,7 +35,7 @@ import kotlinx.coroutines.launch
  * in the background, until the owner stops it or Android itself is killed
  * and restarted by the boot receiver. On start it brings up the whole
  * runtime: the supervisor restores deployments, the three legs connect,
- * and the agent job engine starts polling. Every 30 seconds it writes a
+ * and the agent job engine starts polling. Every 5 seconds it writes a
  * heartbeat line to the app-private log that the Home screen reads.
  */
 class AgtService : Service() {
@@ -238,7 +238,7 @@ class AgtService : Service() {
     companion object {
         private const val CHANNEL_ID = "agt_host"
         private const val NOTIFICATION_ID = 1001
-        private const val HEARTBEAT_MS = 30_000L
+        private const val HEARTBEAT_MS = 5_000L
 
         private val _running = MutableStateFlow(false)
         val running: StateFlow<Boolean> = _running.asStateFlow()
@@ -259,7 +259,7 @@ class AgtService : Service() {
         var userStopped: Boolean = false
 
         /**
-         * Arm the next watchdog alarm, 10 minutes out, exact where the
+         * Arm the next watchdog alarm, 5 minutes out, exact where the
          * platform allows it. RestartReceiver re-arms on every firing,
          * so the chain survives process death; a deliberate stop ends
          * it because the receiver checks userStopped first.

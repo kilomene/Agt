@@ -305,20 +305,26 @@ class Proot(private val context: Context, private val store: AgtStore) {
         return pb.start()
     }
 
-    /** A persistent interactive guest shell for the console screen. */
-    fun startShell(workdir: String = "/root"): ShellSession {
-        val pb = ProcessBuilder(
-            listOf(
-                prootBin.absolutePath,
-                "-R", rootfsDir.absolutePath,
-                "-0",
-                "-w", workdir,
-                "-b", "/dev",
-                "-b", "/proc",
-                "-b", "/sys",
-                "/bin/bash"
-            )
+    /** A persistent interactive guest shell for the console screen.
+     * Binds mount host directories into the guest (a deployment
+     * session binds its own directory at its workdir, the same mount
+     * the supervisor gives the deployment's process). */
+    fun startShell(workdir: String = "/root", binds: List<Pair<String, String>> = emptyList()): ShellSession {
+        val args = mutableListOf(
+            prootBin.absolutePath,
+            "-R", rootfsDir.absolutePath,
+            "-0",
+            "-w", workdir,
+            "-b", "/dev",
+            "-b", "/proc",
+            "-b", "/sys"
         )
+        for ((host, guest) in binds) {
+            args.add("-b")
+            args.add("$host:$guest")
+        }
+        args.add("/bin/bash")
+        val pb = ProcessBuilder(args)
         pb.environment().clear()
         pb.environment().putAll(envFor(emptyMap()).associate {
             val i = it.indexOf('=')
@@ -351,6 +357,17 @@ class Proot(private val context: Context, private val store: AgtStore) {
         fun send(line: String) {
             try {
                 proc.outputStream.write((line + "\n").toByteArray())
+                proc.outputStream.flush()
+            } catch (e: Exception) {
+                // process ended
+            }
+        }
+
+        /** Raw bytes with no newline: control keys (tab, escape,
+         * arrow sequences, control characters) from the console key bar. */
+        fun sendRaw(text: String) {
+            try {
+                proc.outputStream.write(text.toByteArray())
                 proc.outputStream.flush()
             } catch (e: Exception) {
                 // process ended

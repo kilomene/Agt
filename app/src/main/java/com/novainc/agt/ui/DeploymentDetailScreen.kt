@@ -18,9 +18,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -38,28 +38,40 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.novainc.agt.core.AgtRuntime
 import com.novainc.agt.core.Deployment
+import com.novainc.agt.core.ProcessRecord
 import kotlinx.coroutines.delay
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
- * Deployment detail: live status, controls, masked secrets, and the
- * streaming log. Secrets stay masked until tapped; the log streams every
- * two seconds and follows the tail.
+ * Deployment detail, as designed: one deployment fully open. Live
+ * logs stream every second, secrets stay masked (tap to reveal), and
+ * the recovery actions (restart, snapshot, backups, stop, console)
+ * are all real operations on this deployment.
  */
 @Composable
-fun DeploymentDetailScreen(deploymentId: String, onBack: () -> Unit) {
+fun DeploymentDetailScreen(deploymentId: String, onBack: () -> Unit, onOpenConsole: () -> Unit) {
     val context = LocalContext.current
     val runtime = remember { AgtRuntime.get(context) }
     var deployment by remember { mutableStateOf<Deployment?>(null) }
+    var process by remember { mutableStateOf<ProcessRecord?>(null) }
     var logs by remember { mutableStateOf<List<String>>(emptyList()) }
     var snapshotNote by remember { mutableStateOf("") }
     var revealedSecrets by remember { mutableStateOf(false) }
+    var showBackups by remember { mutableStateOf(false) }
+    var backups by remember { mutableStateOf<List<File>>(emptyList()) }
+    var nowMs by remember { mutableStateOf(System.currentTimeMillis()) }
     val listState = rememberLazyListState()
 
     LaunchedEffect(Unit) {
         while (true) {
             deployment = runtime.store.loadDeployments().firstOrNull { it.id == deploymentId }
-            logs = runtime.supervisor.readLog(deploymentId).lines().takeLast(300)
-            delay(2000)
+            process = runtime.store.loadProcesses().firstOrNull { it.deploymentId == deploymentId }
+            logs = runtime.supervisor.readLog(deploymentId).lines().filter { it.isNotBlank() }.takeLast(300)
+            nowMs = System.currentTimeMillis()
+            delay(1000)
         }
     }
     LaunchedEffect(logs.size) {
@@ -74,105 +86,77 @@ fun DeploymentDetailScreen(deploymentId: String, onBack: () -> Unit) {
             .padding(horizontal = 20.dp, vertical = 24.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
+            CircleIconButton(IconKind.ChevronLeft, onClick = onBack)
+            Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(d?.name ?: "Deployment", color = AgtColors.TextPrimary, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-                Text(d?.kind ?: "", color = AgtColors.TextDim, fontSize = 13.sp)
+                Text(
+                    if (d != null) "${runtimeLabel(d)} · ${sourceLabel(d)}" else "",
+                    color = AgtColors.TextDim, fontSize = 13.sp
+                )
             }
-            OutlinedButton(onClick = onBack) { Text("Back", color = AgtColors.GoldSoft) }
+            if (d != null) {
+                TintedPill(
+                    if (d.status == "running") "RUNNING" else "STOPPED",
+                    if (d.status == "running") AgtColors.Emerald else AgtColors.Danger,
+                    pulsing = d.status == "running"
+                )
+            }
         }
         Spacer(Modifier.height(16.dp))
         if (d == null) {
             EmptyState("This deployment no longer exists.")
             return@Column
         }
+        val running = d.status == "running"
         AgtCard {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("STATUS", color = AgtColors.Gold, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.weight(1f))
-                StatusPill(
-                    d.status.uppercase(),
-                    if (d.status == "running") AgtColors.Emerald else AgtColors.TextDim,
-                    pulsing = d.status == "running"
-                )
-            }
-            Spacer(Modifier.height(8.dp))
-            Text("Command", color = AgtColors.TextDim, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-            Text(d.command, color = AgtColors.TextPrimary, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
-            Spacer(Modifier.height(6.dp))
-            Text("Source", color = AgtColors.TextDim, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-            Text(d.source, color = AgtColors.TextPrimary, fontSize = 13.sp)
-            if (d.port > 0) {
-                Spacer(Modifier.height(6.dp))
-                Text("Port", color = AgtColors.TextDim, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                Text("${d.port}", color = AgtColors.TextPrimary, fontSize = 13.sp)
-            }
-            Spacer(Modifier.height(6.dp))
-            Text("Health", color = AgtColors.TextDim, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-            Text(
-                if (runtime.supervisor.healthy(d)) "Healthy" else "Not answering yet",
-                color = if (runtime.supervisor.healthy(d)) AgtColors.Emerald else AgtColors.Amber,
-                fontSize = 13.sp
+            InfoRow("Subdomain", subdomainOf(d.name), AgtColors.Gold)
+            InfoDivider()
+            InfoRow(
+                "Port",
+                if (d.port > 0) "${d.port} · via tunnel" else "none",
+                AgtColors.TextPrimary
+            )
+            InfoDivider()
+            InfoRow(
+                "Uptime",
+                (if (running && process != null) formatUptimeShort(nowMs - process.startedAt) else "stopped") +
+                    " · restarts ${process?.restarts ?: 0}",
+                AgtColors.TextPrimary
             )
         }
         Spacer(Modifier.height(12.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            if (d.status == "running") {
-                GhostButton("Stop", onClick = { runtime.supervisor.stop(d.id) }, modifier = Modifier.weight(1f))
-                GhostButton("Restart", onClick = { runtime.supervisor.restart(d) }, modifier = Modifier.weight(1f))
-            } else {
-                GoldButton("Start", onClick = { runtime.supervisor.start(d) }, modifier = Modifier.weight(1f))
-            }
-            GhostButton("Snapshot", onClick = {
-                val file = runtime.deployEngine.snapshot(d)
-                snapshotNote = "Snapshot saved: ${file.name}"
-            }, modifier = Modifier.weight(1f))
-        }
-        if (snapshotNote.isNotEmpty()) {
-            Spacer(Modifier.height(8.dp))
-            Text(snapshotNote, color = AgtColors.Emerald, fontSize = 12.sp)
-        }
-        Spacer(Modifier.height(12.dp))
-        if (d.env.isNotEmpty()) {
-            AgtCard {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("SECRETS", color = AgtColors.Gold, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.weight(1f))
-                    Text(
-                        if (revealedSecrets) "Hide" else "Tap to reveal",
-                        color = AgtColors.GoldSoft, fontSize = 12.sp,
-                        modifier = Modifier.clickable { revealedSecrets = !revealedSecrets }
-                    )
-                }
-                Spacer(Modifier.height(8.dp))
-                for ((k, v) in d.env) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(k, color = AgtColors.TextPrimary, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            if (revealedSecrets) v.ifEmpty { "(empty)" } else "••••••••",
-                            color = AgtColors.TextDim, fontSize = 13.sp, fontFamily = FontFamily.Monospace
-                        )
-                    }
-                }
-            }
-            Spacer(Modifier.height(12.dp))
-        }
         AgtCard {
-            Text("LIVE LOG", color = AgtColors.Gold, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("LIVE LOGS", color = AgtColors.TextDim, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+                Spacer(Modifier.weight(1f))
+                Box(
+                    modifier = Modifier
+                        .size(7.dp)
+                        .clip(CircleShape)
+                        .background(if (running) AgtColors.Emerald else AgtColors.TextDim)
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    if (running) "STREAMING" else "STOPPED",
+                    color = if (running) AgtColors.Emerald else AgtColors.TextDim,
+                    fontSize = 11.sp, fontWeight = FontWeight.Bold
+                )
+            }
+            Spacer(Modifier.height(10.dp))
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(320.dp)
+                    .height(300.dp)
                     .clip(RoundedCornerShape(12.dp))
                     .background(AgtColors.MatteBlack)
                     .padding(10.dp)
             ) {
-                if (logs.isEmpty() || logs.all { it.isBlank() }) {
+                if (logs.isEmpty()) {
                     Text("No log lines yet.", color = AgtColors.TextDim, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
                 } else {
                     LazyColumn(state = listState) {
-                        items(logs.filter { it.isNotBlank() }) { line ->
+                        items(logs) { line ->
                             Text(
                                 line, color = AgtColors.TextPrimary, fontSize = 11.5.sp,
                                 fontFamily = FontFamily.Monospace, modifier = Modifier.padding(vertical = 1.dp)
@@ -182,14 +166,138 @@ fun DeploymentDetailScreen(deploymentId: String, onBack: () -> Unit) {
                 }
             }
         }
+        if (d.env.isNotEmpty()) {
+            Spacer(Modifier.height(12.dp))
+            AgtCard {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "ENVIRONMENT + SECRETS", color = AgtColors.TextDim, fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold, letterSpacing = 1.sp, modifier = Modifier.weight(1f)
+                    )
+                    Text("ENCRYPTED AT REST", color = AgtColors.Gold, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                }
+                Spacer(Modifier.height(10.dp))
+                for ((k, v) in d.env) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { revealedSecrets = !revealedSecrets }
+                            .padding(vertical = 5.dp)
+                    ) {
+                        LineIcon(IconKind.Key, AgtColors.Gold, Modifier.size(16.dp))
+                        Spacer(Modifier.width(10.dp))
+                        Text(k, color = AgtColors.TextPrimary, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
+                        Spacer(Modifier.weight(1f))
+                        Text(
+                            if (revealedSecrets) v.ifEmpty { "(empty)" } else maskSecret(v),
+                            color = AgtColors.TextDim, fontSize = 13.sp, fontFamily = FontFamily.Monospace
+                        )
+                    }
+                }
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "Secrets never leave this phone unencrypted, and never appear in logs. Tap a row to reveal.",
+                    color = AgtColors.TextDim, fontSize = 12.sp
+                )
+            }
+        }
         Spacer(Modifier.height(12.dp))
-        GhostButton(
-            "Delete deployment",
-            onClick = {
-                runtime.deployEngine.delete(d.id)
-                onBack()
-            },
-            modifier = Modifier.fillMaxWidth()
-        )
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            ActionButton(IconKind.Refresh, "Restart", Modifier.weight(1f)) {
+                runtime.supervisor.restart(d)
+            }
+            ActionButton(IconKind.Download, "Snapshot", Modifier.weight(1f)) {
+                val file = runtime.deployEngine.snapshot(d)
+                snapshotNote = "Snapshot saved: ${file.name}"
+            }
+            ActionButton(IconKind.Database, "Backups", Modifier.weight(1f)) {
+                val prefix = d.name.replace(Regex("[^A-Za-z0-9_-]"), "-") + "-"
+                backups = runtime.deployEngine.listSnapshots().filter { it.name.startsWith(prefix) }
+                showBackups = !showBackups
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            if (running) {
+                ActionButton(IconKind.Square, "Stop deployment", Modifier.weight(1f)) {
+                    runtime.supervisor.stop(d.id)
+                }
+            } else {
+                ActionButton(IconKind.Play, "Start deployment", Modifier.weight(1f)) {
+                    runtime.supervisor.start(d)
+                }
+            }
+            ActionButton(IconKind.Console, "View in console", Modifier.weight(1f)) {
+                onOpenConsole()
+            }
+        }
+        if (snapshotNote.isNotEmpty()) {
+            Spacer(Modifier.height(10.dp))
+            Text(snapshotNote, color = AgtColors.Emerald, fontSize = 12.sp)
+        }
+        if (showBackups) {
+            Spacer(Modifier.height(12.dp))
+            AgtCard {
+                Text("BACKUPS OF ${d.name.uppercase()}", color = AgtColors.Gold, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(8.dp))
+                if (backups.isEmpty()) {
+                    Text(
+                        "No backups yet. Snapshot creates one.",
+                        color = AgtColors.TextDim, fontSize = 12.5.sp
+                    )
+                }
+                for (f in backups) {
+                    Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
+                        Text(f.name, color = AgtColors.TextPrimary, fontSize = 12.sp, fontFamily = FontFamily.Monospace, modifier = Modifier.weight(1f))
+                        Text(
+                            "${f.length() / 1024} KB · " +
+                                SimpleDateFormat("MMM d HH:mm", Locale.US).format(Date(f.lastModified())),
+                            color = AgtColors.TextDim, fontSize = 12.sp
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun InfoRow(label: String, value: String, valueColor: androidx.compose.ui.graphics.Color) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(label, color = AgtColors.TextDim, fontSize = 13.5.sp)
+        Spacer(Modifier.weight(1f))
+        Text(value, color = valueColor, fontSize = 13.5.sp, fontFamily = FontFamily.Monospace)
+    }
+}
+
+@Composable
+private fun InfoDivider() {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .height(1.dp)
+            .background(AgtColors.Stroke)
+    )
+}
+
+@Composable
+private fun ActionButton(icon: IconKind, label: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(14.dp))
+            .background(AgtColors.Surface)
+            .border(1.dp, AgtColors.Stroke, RoundedCornerShape(14.dp))
+            .clickable { onClick() }
+            .padding(horizontal = 10.dp, vertical = 13.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center
+    ) {
+        LineIcon(icon, AgtColors.Gold, Modifier.size(17.dp))
+        Spacer(Modifier.width(7.dp))
+        Text(label, color = AgtColors.TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
     }
 }

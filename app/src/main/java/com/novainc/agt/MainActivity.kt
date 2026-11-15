@@ -105,7 +105,7 @@ private sealed class Dest {
     data object Console : Dest()
     data object Agent : Dest()
     data class Detail(val id: String) : Dest()
-    data class New(val templateId: String? = null) : Dest()
+    data object New : Dest()
     data object Templates : Dest()
     data object Settings : Dest()
 }
@@ -126,24 +126,31 @@ private fun AgtApp() {
         Box(Modifier.weight(1f)) {
             when (current) {
                 is Dest.Home -> HomeScreen(
-                    onOpenConsole = { push(Dest.Console) },
+                    onOpenConsole = { goTab(Dest.Console) },
                     onSettings = { push(Dest.Settings) },
                     onOpenDeploy = { goTab(Dest.Deployments) }
                 )
                 is Dest.Deployments -> DeploymentsScreen(
                     onOpenDetail = { push(Dest.Detail(it)) },
-                    onNew = { push(Dest.New()) },
-                    onTemplates = { push(Dest.Templates) }
+                    onNew = { push(Dest.New) }
                 )
-                is Dest.Console -> ConsoleScreen(onBack = ::pop)
-                is Dest.Agent -> AgentScreen()
-                is Dest.Detail -> DeploymentDetailScreen(current.id, onBack = ::pop)
+                is Dest.Console -> ConsoleScreen()
+                is Dest.Agent -> AgentScreen(
+                    onOpenConsole = { goTab(Dest.Console) },
+                    onSettings = { push(Dest.Settings) }
+                )
+                is Dest.Detail -> DeploymentDetailScreen(
+                    current.id,
+                    onBack = ::pop,
+                    onOpenConsole = { goTab(Dest.Console) }
+                )
                 is Dest.New -> NewDeploymentScreen(
-                    templateId = current.templateId,
                     onCreated = { id -> stack = listOf(Dest.Deployments, Dest.Detail(id)) },
                     onBack = ::pop
                 )
-                is Dest.Templates -> TemplatesScreen(onDeploy = { push(Dest.New(it)) })
+                is Dest.Templates -> TemplatesScreen(
+                    onDeployed = { id -> stack = listOf(Dest.Deployments, Dest.Detail(id)) }
+                )
                 is Dest.Settings -> SettingsScreen(onBack = ::pop)
             }
         }
@@ -612,7 +619,7 @@ private fun HomeScreen(onOpenConsole: () -> Unit, onSettings: () -> Unit, onOpen
             )
             ResilienceRow(
                 "Watchdog",
-                "Alarm chain checks the host every 10 minutes and revives it"
+                "Alarm chain checks the host every 5 minutes and revives it"
             )
         }
 

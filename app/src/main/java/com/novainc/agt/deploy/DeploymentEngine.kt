@@ -61,7 +61,12 @@ class DeploymentEngine(
      * host (GitHub codeload) and extracted into the deployment directory.
      * The guest workdir mirrors the same relative path under /root.
      */
-    suspend fun createFromGit(url: String, name: String, command: String, port: Int): Deployment =
+    suspend fun createFromGit(
+        url: String, name: String, command: String, port: Int,
+        env: Map<String, String> = emptyMap(),
+        autoRestart: Boolean = true,
+        batteryGuard: Boolean = false
+    ): Deployment =
         withContext(Dispatchers.IO) {
             val tarballUrl = gitTarballUrl(url)
             val id = UUID.randomUUID().toString()
@@ -88,7 +93,10 @@ class DeploymentEngine(
                 source = url,
                 command = command,
                 workdir = "/root/deployments/$id",
-                port = port
+                env = env,
+                port = port,
+                autoRestart = autoRestart,
+                batteryGuard = batteryGuard
             )
             val list = store.loadDeployments()
             list.add(deployment)
@@ -97,7 +105,12 @@ class DeploymentEngine(
         }
 
     /** Create from a bundle file (tar.gz) the user picked. */
-    suspend fun createFromBundle(bundle: File, name: String, command: String, port: Int): Deployment =
+    suspend fun createFromBundle(
+        bundle: File, name: String, command: String, port: Int,
+        env: Map<String, String> = emptyMap(),
+        autoRestart: Boolean = true,
+        batteryGuard: Boolean = false
+    ): Deployment =
         withContext(Dispatchers.IO) {
             val id = UUID.randomUUID().toString()
             val dir = store.deploymentDir(id)
@@ -109,7 +122,10 @@ class DeploymentEngine(
                 source = bundle.name,
                 command = command,
                 workdir = "/root/deployments/$id",
-                port = port
+                env = env,
+                port = port,
+                autoRestart = autoRestart,
+                batteryGuard = batteryGuard
             )
             val list = store.loadDeployments()
             list.add(deployment)

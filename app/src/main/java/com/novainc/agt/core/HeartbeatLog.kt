@@ -7,7 +7,7 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * The service heartbeat log: one line every 30 seconds from AgtService,
+ * The service heartbeat log: one line every 5 seconds from AgtService,
  * stored in app-private storage. The in-app Console screen reads this file,
  * so what the owner sees is the service's real heartbeat, not a mock.
  */

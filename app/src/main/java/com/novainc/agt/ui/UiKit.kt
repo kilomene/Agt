@@ -7,6 +7,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -87,6 +88,42 @@ fun StatusPill(text: String, color: Color, pulsing: Boolean = false) {
     }
 }
 
+/** The design's tinted status pill: translucent color fill, colored
+ * border and dot, as on the Deployments and Deployment Detail screens. */
+@Composable
+fun TintedPill(text: String, color: Color, pulsing: Boolean = false) {
+    val pulse = rememberInfiniteTransition(label = "tpill")
+    val scale by pulse.animateFloat(
+        initialValue = 1f, targetValue = if (pulsing) 1.45f else 1f,
+        animationSpec = infiniteRepeatable(tween(900), RepeatMode.Reverse),
+        label = "tpillScale"
+    )
+    val alpha by pulse.animateFloat(
+        initialValue = 1f, targetValue = if (pulsing) 0.35f else 1f,
+        animationSpec = infiniteRepeatable(tween(900), RepeatMode.Reverse),
+        label = "tpillAlpha"
+    )
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(color.copy(alpha = 0.12f))
+            .border(1.dp, color.copy(alpha = 0.55f), RoundedCornerShape(999.dp))
+            .padding(horizontal = 11.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(8.dp)
+                .scale(scale)
+                .alpha(alpha)
+                .clip(CircleShape)
+                .background(color)
+        )
+        Spacer(Modifier.width(7.dp))
+        Text(text, color = color, fontSize = 11.5.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.5.sp)
+    }
+}
+
 @Composable
 fun GoldButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true) {
     Button(
@@ -135,6 +172,50 @@ fun AgtField(
                 inner()
             }
         )
+    }
+}
+
+/** The design's circular icon button: search, gear, back, close. */
+@Composable
+fun CircleIconButton(
+    icon: IconKind,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    tint: Color = AgtColors.TextDim,
+    borderColor: Color = AgtColors.Stroke
+) {
+    Box(
+        modifier = modifier
+            .size(42.dp)
+            .clip(CircleShape)
+            .background(AgtColors.Surface)
+            .border(1.dp, borderColor, CircleShape)
+            .clickable { onClick() },
+        contentAlignment = Alignment.Center
+    ) {
+        LineIcon(icon, tint, Modifier.size(20.dp))
+    }
+}
+
+/** A gold call to action with a leading drawn icon, the design's
+ * primary button form ("Deploy to this phone", "New Deployment"). */
+@Composable
+fun GoldIconButton(
+    icon: IconKind,
+    text: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true
+) {
+    Button(
+        onClick = onClick,
+        colors = ButtonDefaults.buttonColors(containerColor = AgtColors.Gold, contentColor = Color.Black),
+        modifier = modifier,
+        enabled = enabled
+    ) {
+        LineIcon(icon, Color.Black, Modifier.size(18.dp))
+        Spacer(Modifier.width(8.dp))
+        Text(text, fontWeight = FontWeight.Bold, fontSize = 15.sp)
     }
 }
 

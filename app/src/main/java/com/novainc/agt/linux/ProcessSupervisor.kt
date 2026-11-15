@@ -139,6 +139,14 @@ class ProcessSupervisor(
                 if (!proc.isAlive) {
                     val exit = try { proc.exitValue() } catch (e: Exception) { -1 }
                     appendLog(deployment.id, "\n[agt] process exited with code $exit\n")
+                    if (deployment.batteryGuard && batteryGuardHolds()) {
+                        // The guard the New Deployment form promises:
+                        // a low, unplugged battery holds the restart
+                        // (silently, no alert spam) until power returns.
+                        appendLog(deployment.id, "[agt] battery guard: restart held, battery low and not charging\n")
+                        delay(60_000)
+                        continue
+                    }
                     if (deployment.autoRestart) {
                         onEvent?.invoke(
                             "Deployment down: ${deployment.name}",
@@ -166,6 +174,18 @@ class ProcessSupervisor(
                     }
                 }
             }
+        }
+    }
+
+    /** The battery guard test: battery under 25 percent and not
+     * charging. Read live from the BatteryManager every time. */
+    private fun batteryGuardHolds(): Boolean {
+        return try {
+            val bm = context.getSystemService(android.os.BatteryManager::class.java) ?: return false
+            val level = bm.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)
+            level in 0 until 25 && !bm.isCharging
+        } catch (e: Exception) {
+            false
         }
     }
 

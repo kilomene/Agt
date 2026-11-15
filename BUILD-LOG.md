@@ -372,3 +372,81 @@ hand. Every one of those was real. Fixes, root cause first:
   Firebase key itself.
 - Tests: AgtFormatTest adds 7 tests (duration form, latency form,
   CPU sampler math and parsing). Suite is 33 tests.
+
+## Every screen to the design, realtime timing law (2026-11-15, v1.5.0)
+
+Owner order, same day: every screen matches the approved design
+exactly, and the whole app runs realtime: heartbeat every 5 seconds,
+watchdog every 5 minutes, cron cadence every 2 minutes, real time
+notifications and alerts, realtime instant everything.
+
+- Timing law: AgtService heartbeat 30s to 5s (the beat also refreshes
+  the live notification, the widget, and verifies both locks).
+  WatchdogPolicy.INTERVAL_MS 600000 to 300000 (5 minutes); every copy
+  string that said 10 minutes now says 5. The tunnel alert watcher in
+  AgtRuntime now polls state every 1s, so a tunnel drop or recovery
+  notifies within a second of the transition. Phoenix-side crons for
+  this system already run every 2 minutes (key delivery, watchdog).
+- Templates screen rebuilt to the design: "One tap deploys" header
+  with a working search, the gold low-power info card, and rows with
+  icon tiles, the design's per-template blurbs, and a gold Deploy
+  action. One tap now really is one tap: the deployment is created
+  and started on the spot and opens in its detail screen. Templates
+  renamed and re-iconed to the design (Telegram Bot, Discord Bot,
+  Bot, Web Server, Mini Game Server, Memecoin Tools, Light Miner)
+  with new hand drawn icons (send, chat, robot, globe, gamepad,
+  coin, gauge) and a design display order. The Light Miner now paces
+  its hash loop to about 30 percent of one core, so its design line
+  "CPU capped at 30%" is true.
+- Deployments screen rebuilt to the design: "N total, supervised by
+  AGT" with working search, cards with per-deployment icons, tinted
+  RUNNING / STARTING / STOPPED pills, mono detail lines (port,
+  subdomain, restarts, battery guard state), live uptime, round
+  restart / stop / start buttons, and the gold New Deployment button
+  pinned at the bottom. Refresh is every second.
+- Deployment Detail rebuilt to the design: circular back button,
+  tinted status pill, the Subdomain / Port / Uptime info card, LIVE
+  LOGS with a STREAMING marker streaming every second, ENVIRONMENT +
+  SECRETS with the design mask (dots plus the last characters, tap
+  to reveal) and its footnote, and the action grid (Restart,
+  Snapshot, Backups with a real snapshot list, Stop or Start
+  deployment, View in console). The Delete button left the screen to
+  match the design; removal still works through Phoenix jobs.
+- New Deployment rebuilt to the design: source cards (Git URL,
+  Upload bundle, Agent job) with the gold selected state, repository
+  URL with a live validity check, name and port side by side, a real
+  runtime selector that presets the start command, environment
+  variable rows with add and remove, and the two toggles wired for
+  real: auto restart (already a supervisor input) and battery guard
+  (new: the supervisor holds a crash restart while the battery is
+  under 25 percent and not charging, logging the hold instead of
+  alerting). The gold button reads "Deploy to this phone" with the
+  design caption under it. The Agent job card states the truth:
+  Phoenix jobs arrive signed and start on their own.
+- Console rebuilt to the design: "Linux Console" with a VM READY
+  pill, session tabs (host plus one per deployment, each a real
+  shell started in that deployment's directory with its files bound
+  in; the + button opens another host session), and the key bar:
+  ctrl (the next typed letter goes as a control character), tab,
+  esc, paste from the clipboard, and a keys row with real arrow,
+  home, and end sequences, all sent raw to the shell via the new
+  ShellSession.sendRaw. Proot.startShell learned bind mounts.
+- Agent screen rebuilt to the design: Phoenix card (LIVE from the
+  real service and Supabase state, channel, Ed25519 job signing,
+  inbound ports), the four permission scopes with drawn checks and
+  GRANTED markers, RECENT JOB ACTIVITY with real signed job rows,
+  relative times, and a FULL LOG expander, and the gold "Open live
+  console session" button. The gear opens Settings, where the
+  pairing code and device public key now live (AGENT IDENTITY card).
+- Icons: 20 new hand drawn kinds (the seven above plus search, key,
+  gear, chevrons, check, upload, branch, play, server, square,
+  close). No emoji, no stock glyphs, the standing rule.
+- Tests: watchdog interval assertion updated to 300000; AgtFormatTest
+  adds uptime-short, relative-age, secret-mask, and slug/subdomain
+  tests. Suite is 38 tests.
+- Honest residue, stated before shipping: the subdomain shown on the
+  cards is the design's address form (name.agt.novamail.store),
+  derived from the deployment name. Per-deployment subdomain routing
+  through the tunnel is not wired yet; today every deployment rides
+  the one tunnel hostname and its own port. Wiring wildcard routing
+  is a separate step on the owner's word.

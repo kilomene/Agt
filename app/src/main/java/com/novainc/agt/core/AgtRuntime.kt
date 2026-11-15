@@ -145,7 +145,7 @@ class AgtRuntime private constructor(private val context: Context) {
                         )
                     }
                 }
-                delay(5_000)
+                delay(1_000)
             }
         }
     }

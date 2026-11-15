@@ -3,6 +3,11 @@ package com.novainc.agt
 import com.novainc.agt.core.CpuSampler
 import com.novainc.agt.ui.formatDuration
 import com.novainc.agt.ui.formatLatency
+import com.novainc.agt.ui.formatRelative
+import com.novainc.agt.ui.formatUptimeShort
+import com.novainc.agt.ui.maskSecret
+import com.novainc.agt.ui.slugify
+import com.novainc.agt.ui.subdomainOf
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -35,6 +40,36 @@ class AgtFormatTest {
         assertEquals("", formatLatency(null))
         assertEquals("38 ms", formatLatency(38))
         assertEquals("112 ms", formatLatency(112))
+    }
+
+    @Test
+    fun uptimeShortMatchesTheDesignForm() {
+        assertEquals("04:12", formatUptimeShort((4L * 3600 + 12L * 60) * 1000))
+        assertEquals("6d 04:12", formatUptimeShort((6L * 86400 + 4L * 3600 + 12L * 60) * 1000))
+        assertEquals("00:00", formatUptimeShort(0))
+    }
+
+    @Test
+    fun relativeAgeForms() {
+        val now = 1_000_000_000L
+        assertEquals("now", formatRelative(now - 30_000, now))
+        assertEquals("12 min", formatRelative(now - 12 * 60_000, now))
+        assertEquals("1 h", formatRelative(now - 3_600_000, now))
+        assertEquals("3 d", formatRelative(now - 3 * 86_400_000, now))
+    }
+
+    @Test
+    fun secretMaskShowsOnlyTheTail() {
+        assertEquals("(empty)", maskSecret(""))
+        assertEquals("••••", maskSecret("abc"))
+        assertEquals("••••••••••91f", maskSecret("token-xyz91f"))
+    }
+
+    @Test
+    fun slugsAndSubdomains() {
+        assertEquals("meme-bot", slugify("meme-bot"))
+        assertEquals("telegram-bot", slugify("Telegram Bot"))
+        assertEquals("meme.agt.novamail.store", subdomainOf("meme"))
     }
 
     @Test

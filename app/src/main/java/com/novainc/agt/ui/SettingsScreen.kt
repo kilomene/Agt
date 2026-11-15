@@ -99,6 +99,25 @@ fun SettingsScreen(onBack: () -> Unit) {
             )
             StatusRow("App version", BuildConfig.VERSION_NAME, AgtColors.TextPrimary)
         }
+        Spacer(Modifier.height(12.dp))
+        AgtCard {
+            Text("AGENT IDENTITY", color = AgtColors.Gold, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Pairing is optional: the Phoenix key is baked into this build, so signed jobs " +
+                    "verify from the first minute. The code below only names the link if you want it named.",
+                color = AgtColors.TextPrimary, fontSize = 13.sp
+            )
+            Spacer(Modifier.height(10.dp))
+            StatusRow("Pairing code (optional)", runtime.pairingCode(), AgtColors.GoldSoft)
+            Text("Device public key (Ed25519)", color = AgtColors.TextDim, fontSize = 13.sp)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                try { runtime.identity.publicKeyBase64() } catch (e: Exception) { "" },
+                color = AgtColors.TextPrimary, fontSize = 11.sp,
+                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+            )
+        }
         Spacer(Modifier.height(16.dp))
         GhostButton("Back", onClick = onBack, modifier = Modifier.fillMaxWidth())
     }

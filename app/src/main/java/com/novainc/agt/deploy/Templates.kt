@@ -13,6 +13,7 @@ data class Template(
     val id: String,
     val name: String,
     val description: String,
+    val blurb: String = "",
     val icon: IconKind,
     val command: String,
     val port: Int,
@@ -24,9 +25,10 @@ object Templates {
     val all: List<Template> = listOf(
         Template(
             id = "web-server",
-            name = "Web server",
+            name = "Web Server",
             description = "Lightweight static web server on its own port.",
-            icon = IconKind.Cloud,
+            blurb = "Lightweight · Very low power · Cache tuned",
+            icon = IconKind.Globe,
             command = "python3 -m http.server 8080",
             port = 8080,
             files = mapOf(
@@ -41,9 +43,10 @@ object Templates {
         ),
         Template(
             id = "telegram-bot",
-            name = "Telegram bot",
+            name = "Telegram Bot",
             description = "Long-polling Telegram bot, standard library only. Set BOT_TOKEN.",
-            icon = IconKind.Bolt,
+            blurb = "Python or Node · Low power · ~40 MB/day",
+            icon = IconKind.Send,
             command = "python3 bot.py",
             port = 0,
             env = mapOf("BOT_TOKEN" to ""),
@@ -81,9 +84,10 @@ while True:
         ),
         Template(
             id = "discord-bot",
-            name = "Discord bot",
+            name = "Discord Bot",
             description = "Discord gateway bot with a vendored websocket client. Set DISCORD_TOKEN.",
-            icon = IconKind.Bolt,
+            blurb = "Node · Low power · ~60 MB/day",
+            icon = IconKind.Chat,
             command = "python3 bot.py",
             port = 0,
             env = mapOf("DISCORD_TOKEN" to ""),
@@ -196,9 +200,10 @@ while True:
         ),
         Template(
             id = "generic-bot",
-            name = "Generic bot",
+            name = "Bot",
             description = "A small worker that logs a heartbeat and runs a job every minute.",
-            icon = IconKind.Clock,
+            blurb = "Any runtime · Low power · Polling or webhook",
+            icon = IconKind.Robot,
             command = "python3 bot.py",
             port = 0,
             files = mapOf(
@@ -220,9 +225,10 @@ while True:
         ),
         Template(
             id = "game-server",
-            name = "Mini game server",
+            name = "Mini Game Server",
             description = "A tiny TCP number-guessing game on port 7777. Telnet in to play.",
-            icon = IconKind.Bolt,
+            blurb = "Single world · Up to 10 players · Low tick rate",
+            icon = IconKind.Gamepad,
             command = "python3 server.py",
             port = 7777,
             files = mapOf(
@@ -264,9 +270,10 @@ with socketserver.ThreadingTCPServer(("0.0.0.0", 7777), Game) as srv:
         ),
         Template(
             id = "memecoin-tools",
-            name = "Memecoin tools",
+            name = "Memecoin Tools",
             description = "Watches DexScreener for new pairs and logs them. Node 18, no install.",
-            icon = IconKind.Database,
+            blurb = "Chain watchers · Low power · Alert first",
+            icon = IconKind.Coin,
             command = "node watcher.mjs",
             port = 0,
             files = mapOf(
@@ -295,20 +302,26 @@ setInterval(scan, 60000);
         ),
         Template(
             id = "light-miner",
-            name = "Light crypto miner",
-            description = "A real SHA-256d hasher that logs its rate. Light by design, no pool.",
-            icon = IconKind.Memory,
+            name = "Light Miner",
+            description = "A real SHA-256d hasher that logs its rate. Paced to about 30 percent of one core, no pool.",
+            blurb = "CPU capped at 30% · Light by design",
+            icon = IconKind.Gauge,
             command = "python3 miner.py",
             port = 0,
             files = mapOf(
                 "miner.py" to """import hashlib, time
 
-print("light miner started (SHA-256d, CPU only)", flush=True)
+print("light miner started (SHA-256d, paced to about 30 percent of one core)", flush=True)
 n = 0
 start = time.time()
 while True:
-    h = hashlib.sha256(hashlib.sha256(b"agt" + str(n).encode()).digest()).digest()
-    n += 1
+    t0 = time.time()
+    for _ in range(2000):
+        h = hashlib.sha256(hashlib.sha256(b"agt" + str(n).encode()).digest()).digest()
+        n += 1
+    # Pace the loop: sleep 7/3 of the hashing time so the duty
+    # cycle sits near 30 percent of one core, as the template says.
+    time.sleep((time.time() - t0) * 7 / 3)
     if n % 20000 == 0:
         elapsed = time.time() - start
         print("hashes:", n, "rate: %.1f H/s" % (n / elapsed), "last:", h.hex()[:16], flush=True)
@@ -318,4 +331,11 @@ while True:
     )
 
     fun byId(id: String): Template? = all.firstOrNull { it.id == id }
+
+    /** The approved design's display order for the Templates screen. */
+    val ordered: List<Template>
+        get() = listOf(
+            "telegram-bot", "discord-bot", "generic-bot", "web-server",
+            "game-server", "memecoin-tools", "light-miner"
+        ).mapNotNull { byId(it) }
 }
