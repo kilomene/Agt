@@ -10,6 +10,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
+import android.net.wifi.WifiManager
 import android.os.PowerManager
 import android.os.SystemClock
 import androidx.core.app.NotificationCompat
@@ -44,6 +45,7 @@ class AgtService : Service() {
     private var networkMonitor: NetworkMonitor? = null
     private var startedAtMs: Long = 0L
     private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -70,6 +72,36 @@ class AgtService : Service() {
         HeartbeatLog.append(applicationContext, "wake lock acquired")
     }
 
+    /**
+     * Hold a WiFi lock next to the wake lock, the same pairing Termux
+     * uses: the CPU stays awake AND the radio stays awake, so the
+     * tunnel and the doorbell never wait on a sleeping WiFi chip.
+     * Low-latency mode where the platform offers it.
+     */
+    private fun acquireWifiLock() {
+        if (wifiLock?.isHeld == true) return
+        try {
+            val wm = applicationContext.getSystemService(WifiManager::class.java) ?: return
+            val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
+                WifiManager.WIFI_MODE_FULL_LOW_LATENCY else WifiManager.WIFI_MODE_FULL
+            @Suppress("DEPRECATION")
+            wifiLock = wm.createWifiLock(mode, "AGT::HostWifiLock").apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+            HeartbeatLog.append(applicationContext, "wifi lock acquired")
+        } catch (e: Exception) {
+        }
+    }
+
+    private fun releaseWifiLock() {
+        try {
+            if (wifiLock?.isHeld == true) wifiLock?.release()
+        } catch (e: Exception) {
+        }
+        wifiLock = null
+    }
+
     private fun releaseWakeLock() {
         try {
             if (wakeLock?.isHeld == true) wakeLock?.release()
@@ -82,6 +114,8 @@ class AgtService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForeground(NOTIFICATION_ID, buildNotification())
         acquireWakeLock()
+        acquireWifiLock()
+        armWatchdog(applicationContext)
         if (heartbeatJob?.isActive != true) {
             startedAtMs = SystemClock.elapsedRealtime()
             _running.value = true
@@ -104,9 +138,13 @@ class AgtService : Service() {
                         acquireWakeLock()
                         HeartbeatLog.append(applicationContext, "wake lock re-acquired")
                     }
+                    if (wifiLock?.isHeld != true) {
+                        acquireWifiLock()
+                        HeartbeatLog.append(applicationContext, "wifi lock re-acquired")
+                    }
                     HeartbeatLog.append(
                         applicationContext,
-                        "heartbeat #$beat  uptime ${upSec}s  link ${networkMonitor?.reconnector?.state?.value}  wakelock=${if (_wakeLockHeld.value) "held" else "off"}  $legs"
+                        "heartbeat #$beat  uptime ${upSec}s  link ${networkMonitor?.reconnector?.state?.value}  wakelock=${if (_wakeLockHeld.value) "held" else "off"}  wifilock=${if (wifiLock?.isHeld == true) "held" else "off"}  $legs"
                     )
                     // The persistent notification is a live instrument,
                     // not a static label: refresh its line every beat.
@@ -160,6 +198,7 @@ class AgtService : Service() {
         HeartbeatLog.append(applicationContext, "service stopped")
         _running.value = false
         releaseWakeLock()
+        releaseWifiLock()
         AgtRuntime.get(applicationContext).stopAll()
         networkMonitor?.stop()
         networkMonitor = null
@@ -218,6 +257,33 @@ class AgtService : Service() {
          * every comeback road (sticky, alarm, boot) respects it. */
         @Volatile
         var userStopped: Boolean = false
+
+        /**
+         * Arm the next watchdog alarm, 10 minutes out, exact where the
+         * platform allows it. RestartReceiver re-arms on every firing,
+         * so the chain survives process death; a deliberate stop ends
+         * it because the receiver checks userStopped first.
+         */
+        fun armWatchdog(context: Context) {
+            try {
+                val app = context.applicationContext
+                val am = app.getSystemService(AlarmManager::class.java) ?: return
+                val intent = Intent(app, RestartReceiver::class.java).apply {
+                    action = "com.novainc.agt.WATCHDOG"
+                }
+                val pending = PendingIntent.getBroadcast(
+                    app, 77, intent,
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                )
+                val at = System.currentTimeMillis() + WatchdogPolicy.INTERVAL_MS
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && am.canScheduleExactAlarms()) {
+                    am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pending)
+                } else {
+                    am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pending)
+                }
+            } catch (e: Exception) {
+            }
+        }
 
         fun start(context: Context) {
             userStopped = false

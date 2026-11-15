@@ -294,3 +294,28 @@ Wake lock and persistence:
 - Battery exemption was already in place (permission, status and the
   request button on Home); MIUI autostart remains a phone-side toggle
   the owner controls.
+
+## Strict hardening round (2026-11-15, v1.3.0)
+
+Owner order: background running must be strictly hardened, more
+sensitive than the Termux stack ever was. On top of v1.2.0:
+
+- WiFi lock: the service now holds a low-latency WiFi lock next to
+  the partial wake lock (the pairing Termux uses, taken further).
+  Both locks are verified every heartbeat and re-acquired on the
+  spot if the system drops either; both ride the heartbeat line.
+- Watchdog alarm chain (core/Watchdog.kt, policy unit tested): an
+  exact alarm fires every 10 minutes; RestartReceiver restarts the
+  service if the whole process died silently and re-arms the next
+  alarm. The chain starts at boot and at every service start, and a
+  deliberate owner stop ends it. The host now has four comeback
+  roads: START_STICKY, boot receiver, one-second restart alarm, and
+  this watchdog chain.
+- Doorbell sensitivity: the Firebase wake and alert poll tightened
+  from 30 seconds to 10 seconds (FCM wake remains instant, and the
+  job poll still cuts to about 250ms on a ring).
+- Redmi/MIUI: Home gained an "Allow autostart (Redmi / MIUI)" button
+  deep-linking to MIUI's autostart manager (plain app settings as
+  fallback), plus watchdog and autostart rows on the resilience card.
+  On a Redmi that MIUI switch is the one gate no code can pass, so
+  the app now takes the owner straight to it.

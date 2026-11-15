@@ -460,6 +460,14 @@ private fun HomeScreen(onOpenConsole: () -> Unit, onSettings: () -> Unit) {
                 "Battery exemption",
                 if (batteryExempt) "Exempt, unrestricted" else "Not exempt yet, tap below"
             )
+            ResilienceRow(
+                "Redmi autostart",
+                "MIUI can block background starts, allow AGT in autostart below"
+            )
+            ResilienceRow(
+                "Watchdog",
+                "Alarm chain checks the host every 10 minutes and revives it"
+            )
         }
 
         Spacer(Modifier.height(16.dp))
@@ -502,6 +510,11 @@ private fun HomeScreen(onOpenConsole: () -> Unit, onSettings: () -> Unit) {
             onClick = { requestBatteryExemption(context) },
             modifier = Modifier.fillMaxWidth()
         ) { Text("Request battery exemption", color = AgtColors.TextPrimary) }
+        Spacer(Modifier.height(10.dp))
+        OutlinedButton(
+            onClick = { openMiuiAutostart(context) },
+            modifier = Modifier.fillMaxWidth()
+        ) { Text("Allow autostart (Redmi / MIUI)", color = AgtColors.TextPrimary) }
     }
 }
 
@@ -588,6 +601,35 @@ private fun ResilienceRow(title: String, state: String) {
         Column {
             Text(title, color = AgtColors.TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
             Text(state, color = AgtColors.TextDim, fontSize = 12.sp)
+        }
+    }
+}
+
+/**
+ * MIUI hides background autostart behind its own security center, and
+ * on a Redmi that switch matters more than any code: if MIUI blocks
+ * the start, no receiver ever runs. Deep-link straight to the MIUI
+ * autostart manager, falling back to the plain app settings page on
+ * anything that is not MIUI.
+ */
+private fun openMiuiAutostart(context: Context) {
+    val miui = Intent().apply {
+        component = android.content.ComponentName(
+            "com.miui.securitycenter",
+            "com.miui.permcenter.autostart.AutoStartManagementActivity"
+        )
+    }
+    try {
+        context.startActivity(miui)
+    } catch (e: Exception) {
+        try {
+            context.startActivity(
+                Intent(
+                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:" + context.packageName)
+                )
+            )
+        } catch (ignored: Exception) {
         }
     }
 }

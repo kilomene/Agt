@@ -108,7 +108,7 @@ class FirebaseLeg(private val store: AgtStore) {
                     _state.value = State.ERROR
                     _detail.value = e.message ?: "Firebase error"
                 }
-                delay(30_000)
+                delay(10_000)
             }
         }
     }

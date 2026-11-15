@@ -5,16 +5,23 @@ import android.content.Context
 import android.content.Intent
 
 /**
- * Brings the host back after Android kills the service or the owner
- * swipes the app away: AgtService schedules a one-second alarm on its
- * way down (unless the owner deliberately stopped it), and this
- * receiver is what the alarm fires. Combined with the boot receiver
- * and START_STICKY, the host has three independent roads back to life.
+ * Two jobs, one receiver:
+ *  - Comeback: AgtService schedules a one-second alarm on its way down
+ *    (task removed or destroyed) and this receiver restarts the host,
+ *    unless the owner deliberately stopped it.
+ *  - Watchdog chain: every 10 minutes the alarm fires again; if the
+ *    whole process died silently, the service is restarted here, and
+ *    the next watchdog alarm is armed before returning.
+ * Combined with START_STICKY and the boot receiver, the host has four
+ * independent roads back to life, all respecting a deliberate stop.
  */
 class RestartReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        if (!AgtService.userStopped) {
+        if (WatchdogPolicy.shouldRestart(AgtService.userStopped, AgtService.running.value)) {
             AgtService.start(context)
+        }
+        if (!AgtService.userStopped) {
+            AgtService.armWatchdog(context)
         }
     }
 }
