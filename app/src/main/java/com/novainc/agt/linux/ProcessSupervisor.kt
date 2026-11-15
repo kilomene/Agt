@@ -31,6 +31,12 @@ class ProcessSupervisor(
     private val running = ConcurrentHashMap<String, Process>()
     private val watchers = ConcurrentHashMap<String, Job>()
 
+    /** Fired on watcher-observed events only (a deployment died, a
+     * deployment came back after a crash restart). Manual start and stop
+     * from the UI or a job do not fire this: the owner caused those.
+     * Wired by AgtRuntime to the phone's alert notifications. */
+    var onEvent: ((title: String, text: String) -> Unit)? = null
+
     /** Start a deployment (or restart it if it is already running). */
     @Synchronized
     fun start(deployment: Deployment): ProcessRecord {
@@ -134,14 +140,26 @@ class ProcessSupervisor(
                     val exit = try { proc.exitValue() } catch (e: Exception) { -1 }
                     appendLog(deployment.id, "\n[agt] process exited with code $exit\n")
                     if (deployment.autoRestart) {
+                        onEvent?.invoke(
+                            "Deployment down: ${deployment.name}",
+                            "${deployment.name} exited with code $exit. Restarting it now."
+                        )
                         appendLog(deployment.id, "[agt] restarting in ${backoffMs / 1000}s\n")
                         delay(backoffMs)
                         backoffMs = (backoffMs * 2).coerceAtMost(30_000L)
                         val old = store.loadProcesses().firstOrNull { it.deploymentId == deployment.id }
                         val record = start(deployment)
                         upsertProcess(record.copy(restarts = (old?.restarts ?: 0) + 1))
+                        onEvent?.invoke(
+                            "Deployment back up: ${deployment.name}",
+                            "${deployment.name} restarted and is running again."
+                        )
                         backoffMs = 1000L
                     } else {
+                        onEvent?.invoke(
+                            "Deployment stopped: ${deployment.name}",
+                            "${deployment.name} exited with code $exit and auto-restart is off."
+                        )
                         updateProcessStatus(deployment.id, "stopped")
                         setDeploymentStatus(deployment.id, "stopped")
                         break

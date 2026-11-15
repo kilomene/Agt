@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import com.novainc.agt.MainActivity
@@ -41,16 +42,45 @@ class AgtService : Service() {
     private var heartbeatJob: Job? = null
     private var networkMonitor: NetworkMonitor? = null
     private var startedAtMs: Long = 0L
+    private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onCreate() {
         super.onCreate()
         createChannel()
+        AlertNotifier.ensureChannel(applicationContext)
         networkMonitor = NetworkMonitor(applicationContext).also { it.start(scope) }
         network = networkMonitor
     }
 
+    /**
+     * Hold a partial wake lock for the whole life of the service: the
+     * screen can lock and the phone can sit in a pocket, the CPU keeps
+     * serving. The lock is reference-count-free and released exactly
+     * once, in onDestroy, so it can never leak past the service.
+     */
+    private fun acquireWakeLock() {
+        if (wakeLock?.isHeld == true) return
+        val pm = getSystemService(PowerManager::class.java) ?: return
+        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AGT::HostWakeLock").apply {
+            setReferenceCounted(false)
+            acquire()
+        }
+        _wakeLockHeld.value = true
+        HeartbeatLog.append(applicationContext, "wake lock acquired")
+    }
+
+    private fun releaseWakeLock() {
+        try {
+            if (wakeLock?.isHeld == true) wakeLock?.release()
+        } catch (e: Exception) {
+        }
+        wakeLock = null
+        _wakeLockHeld.value = false
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForeground(NOTIFICATION_ID, buildNotification())
+        acquireWakeLock()
         if (heartbeatJob?.isActive != true) {
             startedAtMs = SystemClock.elapsedRealtime()
             _running.value = true
@@ -68,8 +98,9 @@ class AgtService : Service() {
                         "supabase=${if (runtime.supabase.configured) "ready" else "not-configured"}"
                     HeartbeatLog.append(
                         applicationContext,
-                        "heartbeat #$beat  uptime ${upSec}s  link ${networkMonitor?.reconnector?.state?.value}  $legs"
+                        "heartbeat #$beat  uptime ${upSec}s  link ${networkMonitor?.reconnector?.state?.value}  wakelock=${if (_wakeLockHeld.value) "held" else "off"}  $legs"
                     )
+                    com.novainc.agt.ui.AgtWidget.updateAll(applicationContext)
                     delay(HEARTBEAT_MS)
                 }
             }
@@ -80,6 +111,7 @@ class AgtService : Service() {
     override fun onDestroy() {
         HeartbeatLog.append(applicationContext, "service stopped")
         _running.value = false
+        releaseWakeLock()
         AgtRuntime.get(applicationContext).stopAll()
         networkMonitor?.stop()
         networkMonitor = null
@@ -123,6 +155,9 @@ class AgtService : Service() {
 
         private val _running = MutableStateFlow(false)
         val running: StateFlow<Boolean> = _running.asStateFlow()
+
+        private val _wakeLockHeld = MutableStateFlow(false)
+        val wakeLockHeld: StateFlow<Boolean> = _wakeLockHeld.asStateFlow()
 
         private val _serviceUptimeBaseMs = MutableStateFlow(0L)
         val serviceUptimeBaseMs: StateFlow<Long> = _serviceUptimeBaseMs.asStateFlow()

@@ -45,7 +45,13 @@ class FirebaseLeg(private val store: AgtStore) {
 
     private var loop: Job? = null
     var onWake: (() -> Unit)? = null
+
+    /** Phoenix can push an instant alert to this phone by writing
+     * {"at": <ms>, "title": "...", "message": "..."} to the alert node.
+     * It lands as a high importance notification via AlertNotifier. */
+    var onAlert: ((title: String, message: String) -> Unit)? = null
     private var lastWake: Long = 0
+    private var lastAlert: Long = 0
 
     fun start(scope: CoroutineScope, deviceId: String, telemetry: () -> JsonObject) {
         stop()
@@ -61,6 +67,7 @@ class FirebaseLeg(private val store: AgtStore) {
                 try {
                     writePresence(deviceId, token, telemetry())
                     checkWake(deviceId, token)
+                    checkAlert(deviceId, token)
                     _state.value = State.CONNECTED
                     _detail.value = "Presence live, doorbell listening"
                 } catch (e: Exception) {
@@ -108,6 +115,41 @@ class FirebaseLeg(private val store: AgtStore) {
             if (at > lastWake) {
                 lastWake = at
                 onWake?.invoke()
+            }
+        }
+    }
+
+    private fun checkAlert(deviceId: String, token: String) {
+        val req = Request.Builder()
+            .url("${AgtConfig.FIREBASE_RTDB_URL}/agt/hosts/$deviceId/alert.json?auth=$token")
+            .get()
+            .build()
+        client.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) return
+            val text = (resp.body?.string() ?: "").trim()
+            val alert = parseAlert(text) ?: return
+            if (alert.at > lastAlert) {
+                lastAlert = alert.at
+                onAlert?.invoke(alert.title, alert.message)
+            }
+        }
+    }
+
+    data class Alert(val at: Long, val title: String, val message: String)
+
+    companion object {
+        /** Parse an alert node body; null for empty or malformed input.
+         * Pure and unit tested: a bad node must never crash the leg. */
+        fun parseAlert(text: String): Alert? {
+            if (text.isEmpty() || text == "null") return null
+            return try {
+                val obj = com.google.gson.JsonParser.parseString(text).asJsonObject
+                val at = obj.get("at")?.takeIf { it.isJsonPrimitive }?.asLong ?: return null
+                val title = obj.get("title")?.takeIf { it.isJsonPrimitive }?.asString ?: "AGT alert"
+                val message = obj.get("message")?.takeIf { it.isJsonPrimitive }?.asString ?: ""
+                Alert(at, title, message)
+            } catch (e: Exception) {
+                null
             }
         }
     }

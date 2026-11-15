@@ -43,6 +43,7 @@ class AgtRuntime private constructor(private val context: Context) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var syncJob: Job? = null
     private var hostId: String? = null
+    private var alertsWired = false
 
     private val _linuxReady = MutableStateFlow(proot.isInstalled())
     val linuxReady: StateFlow<Boolean> = _linuxReady.asStateFlow()
@@ -104,9 +105,42 @@ class AgtRuntime private constructor(private val context: Context) {
         }
     }
 
+    /** Wire every real-time alert path once: supervisor events, tunnel
+     * transitions, and Phoenix alerts pushed through the Firebase
+     * doorbell node all land as phone notifications via AlertNotifier. */
+    private fun wireAlerts() {
+        if (alertsWired) return
+        alertsWired = true
+        val appContext = context.applicationContext
+        supervisor.onEvent = { title, text -> AlertNotifier.notify(appContext, title, text) }
+        firebase.onAlert = { title, message -> AlertNotifier.notify(appContext, title, message) }
+        scope.launch {
+            var prev: TunnelLeg.State? = null
+            while (isActive) {
+                val s = tunnel.state.value
+                val p = prev
+                prev = s
+                if (p != null && p != s) {
+                    when {
+                        s == TunnelLeg.State.ERROR -> AlertNotifier.notify(
+                            appContext, "Tunnel down",
+                            "The Cloudflare tunnel dropped. AGT is reconnecting on its own."
+                        )
+                        s == TunnelLeg.State.CONNECTED && p == TunnelLeg.State.ERROR -> AlertNotifier.notify(
+                            appContext, "Tunnel back up",
+                            "The Cloudflare tunnel reconnected. The host is reachable again."
+                        )
+                    }
+                }
+                delay(5_000)
+            }
+        }
+    }
+
     /** Start everything the host needs: supervisor restore, legs, jobs. */
     fun startAll() {
         val settings = store.loadSettings()
+        wireAlerts()
         supervisor.restoreAll()
         tunnel.start(scope, settings.tunnelToken)
         firebase.onWake = { scope.launch { pollJobsOnce() } }
@@ -162,5 +196,8 @@ class AgtRuntime private constructor(private val context: Context) {
                 instance ?: AgtRuntime(context.applicationContext).also { instance = it }
             }
         }
+
+        /** The existing instance without creating one (widget reads). */
+        fun peek(): AgtRuntime? = instance
     }
 }
