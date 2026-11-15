@@ -114,7 +114,7 @@ class Proot(private val context: Context, private val store: AgtStore) {
      * from [AgtConfig.ROOTFS_URL] instead. */
     private fun copyBundledRootfs(out: File, onProgress: (Float) -> Unit): Boolean {
         return try {
-            context.assets.open("debian-bookworm-agt-arm64.tar.gz").use { input ->
+            context.assets.open("debian-bookworm-agt-arm64.bundle").use { input ->
                 out.parentFile?.mkdirs()
                 var copied = 0L
                 val total = AgtConfig.ROOTFS_SIZE_BYTES
