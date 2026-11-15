@@ -196,8 +196,15 @@ fun ConsoleScreen() {
                 .padding(14.dp)
         ) {
             if (!linuxReady) {
+                val installStatus = runtime.installStatus.value
                 Text(
-                    "Linux sets itself up on first start. Once it is ready, this console opens a real shell inside Debian.",
+                    when {
+                        installStatus.startsWith("Install failed") ->
+                            "Linux setup hit a problem and is retrying on its own. $installStatus"
+                        installStatus.isNotEmpty() -> installStatus
+                        else ->
+                            "Linux sets itself up on first start. Once it is ready, this console opens a real shell inside Debian."
+                    },
                     color = AgtColors.TextDim, fontSize = 13.sp
                 )
             } else {

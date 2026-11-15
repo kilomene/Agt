@@ -13,8 +13,8 @@ android {
         applicationId = "com.novainc.agt"
         minSdk = 26
         targetSdk = 34
-        versionCode = 8
-        versionName = "1.6.0"
+        versionCode = 9
+        versionName = "1.6.1"
         // Client config injected at build time from CI secrets (GitHub
         // repo secrets SUPABASE_ANON_KEY and TUNNEL_TOKEN). Local builds
         // without the env vars build with empty values and the legs

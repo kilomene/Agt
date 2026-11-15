@@ -44,13 +44,30 @@ class AgtMessagingService : FirebaseMessagingService() {
         // 60 second heartbeat: upsert the host row with fresh telemetry.
         svcScope.launch {
             try {
+                // The token can land before the runtime has ever run,
+                // when settings still hold no device id. Upserting with
+                // an empty id created a dead host row keyed by "" that
+                // nothing else could ever match, so ensure the id the
+                // same way AgtRuntime.deviceId() does before writing.
+                val fresh = store.loadSettings()
+                val deviceId = if (fresh.deviceId.isNotEmpty()) {
+                    fresh.deviceId
+                } else {
+                    val generated = "agt-" + java.util.UUID.randomUUID().toString().take(8)
+                    store.saveSettings(fresh.copy(deviceId = generated))
+                    generated
+                }
                 val telemetry = JsonObject().apply {
                     addProperty("fcmToken", token)
                     addProperty("fcmRotatedAt", System.currentTimeMillis())
                 }
-                SupabaseLeg(store).upsertHost(
-                    settings.deviceId, "AGT host", settings.devicePublicKey, telemetry
-                )
+                val publicKey = try {
+                    com.novainc.agt.agent.DeviceIdentity(applicationContext, store)
+                        .publicKeyBase64()
+                } catch (e: Exception) {
+                    fresh.devicePublicKey
+                }
+                SupabaseLeg(store).upsertHost(deviceId, "AGT host $deviceId", publicKey, telemetry)
             } catch (e: Exception) {
                 // Not configured yet or offline: the regular heartbeat
                 // carries the token as soon as the leg is live.

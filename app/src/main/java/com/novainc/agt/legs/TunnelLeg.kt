@@ -38,6 +38,19 @@ class TunnelLeg(private val context: Context) {
     private var process: Process? = null
     private var watcher: Job? = null
 
+    /** The last cloudflared output lines, oldest first. Kept so a
+     * failure is diagnosable in the tunnel's own words (and rides
+     * telemetry to Phoenix), never just a bare exit code. */
+    private val recentLines = ArrayDeque<String>()
+
+    /** Restart delay after a cloudflared exit: starts at 5s, doubles
+     * to a 60s cap, resets the moment a connection registers. A dead
+     * tunnel must keep retrying forever without thrashing. */
+    @Volatile
+    private var restartBackoffMs = 5_000L
+
+    fun recentOutput(): List<String> = synchronized(recentLines) { recentLines.toList() }
+
     fun binary(): File = File(context.applicationInfo.nativeLibraryDir, "libcloudflared.so")
 
     fun start(scope: CoroutineScope, token: String) {
@@ -64,7 +77,12 @@ class TunnelLeg(private val context: Context) {
                 process = proc
                 val reader = Thread {
                     proc.inputStream.bufferedReader().forEachLine { line ->
+                        synchronized(recentLines) {
+                            recentLines.addLast(line)
+                            while (recentLines.size > 20) recentLines.removeFirst()
+                        }
                         if (line.contains("Registered tunnel connection")) {
+                            restartBackoffMs = 5_000L
                             _state.value = State.CONNECTED
                             _detail.value = "Connected as ${AgtConfig.TUNNEL_HOSTNAME}"
                         } else if (line.contains("error", ignoreCase = true) ||
@@ -92,8 +110,12 @@ class TunnelLeg(private val context: Context) {
                         }
                         if (!proc.isAlive) {
                             _state.value = State.ERROR
-                            _detail.value = "cloudflared exited (code ${proc.exitValue()}); restarting"
-                            delay(5000)
+                            val lastLine = synchronized(recentLines) { recentLines.lastOrNull() } ?: ""
+                            _detail.value = "cloudflared exited (code ${proc.exitValue()}); restarting" +
+                                if (lastLine.isNotEmpty()) ". Last output: ${lastLine.take(140)}" else ""
+                            val waitMs = restartBackoffMs
+                            restartBackoffMs = (restartBackoffMs * 2).coerceAtMost(60_000L)
+                            delay(waitMs)
                             if (isActive) start(scope, token)
                             break
                         }

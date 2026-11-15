@@ -494,3 +494,59 @@ Fixes, all in the wiring, no UI change at all:
   expired, leg connected), which is the signal the keeper mints on.
 - Tests: FirebaseTokenExpiryTest adds 4 tests (expiry read, past
   expiry, missing exp, malformed tokens). Suite is 41 tests.
+
+## Field failure repair round (2026-11-15, v1.6.1)
+
+Built from the owner's first real install of v1.6.0 on the Redmi.
+Four defects, all reproduced from his photos and the live database:
+
+- Linux never became ready: Proot.extract wrote tar symlink and
+  hardlink entries as empty regular files. A Debian rootfs is built
+  on links (bin, lib, sbin are symlinks into usr; usr/bin/python3 is
+  a symlink), so the tree came out corrupt and entries under linked
+  directories failed, killing every install attempt at the same
+  place. The extractor now creates real symlinks and hardlinks via
+  android.system.Os, skips device nodes and FIFOs (PRoot binds the
+  host /dev), and clears wrong-type paths before writing files. A
+  failed install also retries on its own after a minute, and the
+  Console screen shows the live install status instead of a static
+  promise.
+- The Supabase leg showed Live when nothing had ever synced: the
+  label only checked that a key was baked in. AgtRuntime now records
+  the last successful sync and the last sync error; Live means a
+  cycle landed clean, and the leg detail shows the real error text.
+  Sync state, tunnel state and detail, and install status ride
+  telemetry so Phoenix can see them.
+- Tunnel down notifications spammed: every cloudflared restart
+  fired a new stacked notification. Alerts are now one per outage
+  episode on a stable notification id (AlertNotifier stableKey),
+  cloudflared restarts back off from 5s to a 60s cap, and the leg
+  keeps its last 20 output lines so the exit detail carries the
+  tunnel's own last words instead of a bare code.
+- AgtMessagingService could upsert a host row with an empty device
+  id when the FCM token landed before the runtime generated one;
+  that dead row keyed by "" matched nothing. It now ensures the
+  device id first and upserts with the real identity public key.
+- Settings StatusRow crushed labels into a one-letter column (the
+  "FCM push" photo): the unweighted value took the full row width.
+  Label and value are both weighted now, the value right aligned
+  and wrapping inside its own column. The Host resilience column
+  titles drop to 12sp so long words stop splitting mid-word on
+  narrow screens.
+
+Root cause pinned live (2026-11-15, later the same day): the Supabase
+hosts table carries a unique constraint on name (hosts_name_key). The
+FCM token service had created a host row named "AGT host" with an
+empty device_id on first token rotation, so the runtime upsert for the
+real device id inserted a second row with the same name and Postgres
+rejected every cycle with 409 (proven by replaying the exact upsert
+against PostgREST: same name 409, any other name 201). That one
+failure explains the whole field picture: no host row, so no host id,
+so the job engine never polled, so the Firebase key job could never
+land, and the Supabase leg still showed Live because it only checked
+that keys were configured. Server repair applied live the same day:
+the dead row now carries the phone's real device_id
+(agt-05c553e5), so the installed v1.6.0 sync merges into it and the
+keeper can deliver the key without waiting for the reinstall. App fix
+in v1.6.1: the host name now carries the device id at both upsert
+call sites, so no future install can collide on the name again.

@@ -174,27 +174,87 @@ class Proot(private val context: Context, private val store: AgtStore) {
     private fun extract(tarball: File) {
         if (rootfsDir.exists()) rootfsDir.deleteRecursively()
         rootfsDir.mkdirs()
+        val rootCanonical = rootfsDir.canonicalPath
         GzipCompressorInputStream(BufferedInputStream(FileInputStream(tarball))).use { gz ->
             TarArchiveInputStream(gz).use { tar ->
                 var entry = tar.nextEntry
                 while (entry != null) {
                     val target = File(rootfsDir, entry.name)
                     val canonical = target.canonicalFile
-                    if (!canonical.path.startsWith(rootfsDir.canonicalPath)) {
+                    if (!canonical.path.startsWith(rootCanonical)) {
                         throw IllegalStateException("Unsafe tar entry: ${entry.name}")
                     }
-                    if (entry.isDirectory) {
-                        canonical.mkdirs()
-                    } else {
-                        canonical.parentFile?.mkdirs()
-                        FileOutputStream(canonical).use { out ->
-                            tar.copyTo(out)
+                    when {
+                        entry.isDirectory -> canonical.mkdirs()
+                        entry.isSymbolicLink -> {
+                            // A Debian rootfs is built on links: bin, lib,
+                            // sbin and lib64 are symlinks into usr, and
+                            // usr/bin/python3 is a symlink to python3.11.
+                            // Writing a link as an empty regular file (the
+                            // old behaviour) corrupts the tree and can make
+                            // later entries fail outright, so the install
+                            // never finished. Create the real link.
+                            canonical.parentFile?.mkdirs()
+                            removePath(canonical)
+                            android.system.Os.symlink(entry.linkName, canonical.path)
                         }
-                        if (entry.mode and 0x49 != 0) canonical.setExecutable(true, false)
+                        entry.isLink -> {
+                            // Hardlink: point at the already extracted
+                            // target; fall back to copying its bytes when
+                            // the filesystem refuses the link.
+                            canonical.parentFile?.mkdirs()
+                            removePath(canonical)
+                            val source = File(rootfsDir, entry.linkName).canonicalFile
+                            try {
+                                android.system.Os.link(source.path, canonical.path)
+                            } catch (e: Exception) {
+                                if (source.isFile) {
+                                    source.copyTo(canonical, overwrite = true)
+                                } else {
+                                    throw IllegalStateException(
+                                        "Hardlink target missing for ${entry.name}: ${entry.linkName}"
+                                    )
+                                }
+                            }
+                        }
+                        entry.isFIFO || entry.isCharacterDevice || entry.isBlockDevice -> {
+                            // Device nodes and FIFOs cannot be created
+                            // without root, and the guest never needs
+                            // them: PRoot binds the host /dev over the
+                            // rootfs at runtime.
+                        }
+                        else -> {
+                            canonical.parentFile?.mkdirs()
+                            if (isSymlink(canonical) || canonical.isDirectory) removePath(canonical)
+                            FileOutputStream(canonical).use { out ->
+                                tar.copyTo(out)
+                            }
+                            if (entry.mode and 0x49 != 0) canonical.setExecutable(true, false)
+                        }
                     }
                     entry = tar.nextEntry
                 }
             }
+        }
+    }
+
+    /** True when the path itself is a symlink (not its target). */
+    private fun isSymlink(file: File): Boolean {
+        return try {
+            val st = android.system.Os.lstat(file.path)
+            (st.st_mode and 0xF000) == 0xA000
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /** Remove a path without following it: a symlink is unlinked
+     * itself, a directory tree is deleted, a file is deleted. */
+    private fun removePath(file: File) {
+        if (isSymlink(file) || file.isFile) {
+            file.delete()
+        } else if (file.isDirectory) {
+            file.deleteRecursively()
         }
     }
 

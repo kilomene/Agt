@@ -57,6 +57,18 @@ class AgtRuntime private constructor(private val context: Context) {
     private val _installing = MutableStateFlow(false)
     val installing: StateFlow<Boolean> = _installing.asStateFlow()
 
+    /** The Supabase sync truth: the last cycle's error (null when the
+     * last cycle landed) and when a cycle last landed. The legs card
+     * reads these, so "Live" means a sync actually arrived, never just
+     * that a key exists. */
+    private val _syncError = MutableStateFlow<String?>(null)
+    val syncError: StateFlow<String?> = _syncError.asStateFlow()
+
+    private val _lastSyncOkMs = MutableStateFlow(0L)
+    val lastSyncOkMs: StateFlow<Long> = _lastSyncOkMs.asStateFlow()
+
+    private var tunnelDownAlerted = false
+
     /** Ensure a device id exists; the id is stable per phone, forever. */
     fun deviceId(): String {
         val settings = store.loadSettings()
@@ -86,12 +98,19 @@ class AgtRuntime private constructor(private val context: Context) {
             addProperty("linuxReady", proot.isInstalled())
             addProperty("appVersion", com.novainc.agt.BuildConfig.VERSION_NAME)
             addProperty("firebaseKeySet", firebase.hasUsableKey())
+            addProperty("tunnelState", tunnel.state.value.name)
+            addProperty("tunnelDetail", tunnel.detail.value.take(160))
+            addProperty("syncError", _syncError.value ?: "")
+            addProperty("installStatus", _installStatus.value.take(120))
             addProperty("deployments", store.loadDeployments().size)
             addProperty("running", store.loadDeployments().count { it.status == "running" })
         }
     }
 
-    /** First-run Linux install, with progress the UI can show. */
+    /** First-run Linux install, with progress the UI can show. A
+     * failed or interrupted install retries on its own after a
+     * minute: the promise is that Linux sets itself up, so a dead
+     * install never just sits there waiting for a human. */
     fun installLinux() {
         if (_installing.value) return
         _installing.value = true
@@ -105,6 +124,10 @@ class AgtRuntime private constructor(private val context: Context) {
             }
             _linuxReady.value = proot.isInstalled()
             _installing.value = false
+            if (!_linuxReady.value) {
+                delay(60_000)
+                if (!proot.isInstalled()) installLinux()
+            }
         }
     }
 
@@ -133,16 +156,26 @@ class AgtRuntime private constructor(private val context: Context) {
                 prev = s
                 if (p != null && p != s) {
                     when {
-                        s == TunnelLeg.State.ERROR -> AlertNotifier.notify(
-                            appContext, "Tunnel down",
-                            "The Cloudflare tunnel dropped. AGT is reconnecting on its own.",
-                            NotifyKind.CRITICAL
-                        )
-                        s == TunnelLeg.State.CONNECTED && p == TunnelLeg.State.ERROR -> AlertNotifier.notify(
-                            appContext, "Tunnel back up",
-                            "The Cloudflare tunnel reconnected. The host is reachable again.",
-                            NotifyKind.STATUS
-                        )
+                        // One alert per outage episode, on a stable
+                        // notification id: the tunnel restarting itself
+                        // every few seconds must not stack a fresh card
+                        // for every attempt.
+                        s == TunnelLeg.State.ERROR && !tunnelDownAlerted -> {
+                            tunnelDownAlerted = true
+                            AlertNotifier.notify(
+                                appContext, "Tunnel down",
+                                "The Cloudflare tunnel dropped. AGT is reconnecting on its own.",
+                                NotifyKind.CRITICAL, stableKey = "tunnel"
+                            )
+                        }
+                        s == TunnelLeg.State.CONNECTED && tunnelDownAlerted -> {
+                            tunnelDownAlerted = false
+                            AlertNotifier.notify(
+                                appContext, "Tunnel back up",
+                                "The Cloudflare tunnel reconnected. The host is reachable again.",
+                                NotifyKind.STATUS, stableKey = "tunnel"
+                            )
+                        }
                     }
                 }
                 delay(1_000)
@@ -154,16 +187,31 @@ class AgtRuntime private constructor(private val context: Context) {
      * card latency), heartbeat, deployment upserts. */
     private suspend fun runSyncCycle() {
         if (!supabase.configured) return
-        val id = deviceId()
-        val t0 = System.currentTimeMillis()
-        val hid = supabase.upsertHost(id, "AGT host", identity.publicKeyBase64(), telemetryJson())
-        supabase.noteLatency(System.currentTimeMillis() - t0)
-        hostId = hid
-        jobEngine.hostId = hid
-        supabase.heartbeat(hid, telemetryJson())
-        val deployments = store.loadDeployments()
-        for (d in deployments) {
-            try { supabase.upsertDeployment(hid, d) } catch (e: Exception) { }
+        try {
+            val id = deviceId()
+            val t0 = System.currentTimeMillis()
+            // The host name carries the device id: hosts.name has a
+            // unique constraint, so a fixed name made every fresh
+            // install collide with the row an earlier install (or the
+            // FCM token service) had already created, and the upsert
+            // failed with 409 on every cycle (field failure, v1.6.0).
+            val hid = supabase.upsertHost(id, "AGT host $id", identity.publicKeyBase64(), telemetryJson())
+            supabase.noteLatency(System.currentTimeMillis() - t0)
+            hostId = hid
+            jobEngine.hostId = hid
+            supabase.heartbeat(hid, telemetryJson())
+            val deployments = store.loadDeployments()
+            for (d in deployments) {
+                try { supabase.upsertDeployment(hid, d) } catch (e: Exception) { }
+            }
+            _lastSyncOkMs.value = System.currentTimeMillis()
+            _syncError.value = null
+        } catch (e: Exception) {
+            // Record the real error where the owner and Phoenix can see
+            // it (legs card detail and telemetry), then let the caller
+            // retry on its normal cadence.
+            _syncError.value = (e.message ?: e.javaClass.simpleName).take(180)
+            throw e
         }
     }
 

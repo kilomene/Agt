@@ -219,6 +219,8 @@ private fun HomeScreen(onOpenConsole: () -> Unit, onSettings: () -> Unit, onOpen
     val firebaseDetail by runtime.firebase.detail.collectAsState()
     val firebaseLatency by runtime.firebase.latencyMs.collectAsState()
     val supabaseLatency by runtime.supabase.latencyMs.collectAsState()
+    val syncError by runtime.syncError.collectAsState()
+    val lastSyncOkMs by runtime.lastSyncOkMs.collectAsState()
     val linuxReady by runtime.linuxReady.collectAsState()
     val installing by runtime.installing.collectAsState()
     val installProgress by runtime.installProgress.collectAsState()
@@ -274,7 +276,9 @@ private fun HomeScreen(onOpenConsole: () -> Unit, onSettings: () -> Unit, onOpen
     val runningCount = deployments.count { it.status == "running" }
     val tunnelLive = tunnelState == TunnelLeg.State.CONNECTED
     val firebaseLive = firebaseState == FirebaseLeg.State.CONNECTED
-    val supabaseLive = runtime.supabase.configured
+    // Live means a sync cycle actually landed with no error since,
+    // never merely that a key was baked into the build.
+    val supabaseLive = runtime.supabase.configured && lastSyncOkMs > 0L && syncError == null
     val liveCount = listOf(tunnelLive, firebaseLive, supabaseLive).count { it }
 
     Column(
@@ -450,9 +454,18 @@ private fun HomeScreen(onOpenConsole: () -> Unit, onSettings: () -> Unit, onOpen
             LegDivider()
             LegRow(
                 IconKind.Database, "Supabase", "Registry, jobs and history",
-                legStateLabel(supabaseLive, false, false),
+                legStateLabel(
+                    supabaseLive,
+                    runtime.supabase.configured && lastSyncOkMs == 0L && syncError == null,
+                    syncError != null
+                ),
                 formatLatency(supabaseLatency),
-                if (!supabaseLive) "This build carries no anon key. CI bakes it from the repo secret." else null
+                when {
+                    syncError != null -> "Sync failing: $syncError"
+                    !runtime.supabase.configured ->
+                        "This build carries no anon key. CI bakes it from the repo secret."
+                    else -> null
+                }
             )
         }
 
@@ -725,7 +738,7 @@ private fun ResilienceColumn(
         }
         Spacer(Modifier.height(8.dp))
         Text(
-            title, color = AgtColors.TextPrimary, fontSize = 13.sp,
+            title, color = AgtColors.TextPrimary, fontSize = 12.sp,
             fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center
         )
         Spacer(Modifier.height(6.dp))

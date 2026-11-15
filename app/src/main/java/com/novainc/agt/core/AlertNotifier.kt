@@ -59,7 +59,10 @@ object AlertNotifier {
         }
     }
 
-    fun notify(context: Context, title: String, text: String, kind: String? = NotifyKind.ALERT) {
+    fun notify(
+        context: Context, title: String, text: String, kind: String? = NotifyKind.ALERT,
+        stableKey: String? = null
+    ) {
         ensureChannels(context)
         val channelId = NotifyKind.channelFor(kind)
         val openIntent = PendingIntent.getActivity(
@@ -81,8 +84,17 @@ object AlertNotifier {
             .setPriority(priority)
             .build()
         val nm = context.getSystemService(NotificationManager::class.java) ?: return
+        // A stable key pins the notification id, so a repeated alert
+        // (the tunnel dropping again inside the same outage) replaces
+        // the one already on screen instead of stacking a new card for
+        // every retry. One-off events keep unique ids.
+        val notificationId = if (stableKey != null) {
+            3000 + (stableKey.hashCode() and 0x3FFF)
+        } else {
+            nextId.getAndIncrement()
+        }
         try {
-            nm.notify(nextId.getAndIncrement(), notification)
+            nm.notify(notificationId, notification)
         } catch (e: SecurityException) {
             // POST_NOTIFICATIONS not granted yet: the in-app job feed and
             // service log still carry the event, nothing crashes.

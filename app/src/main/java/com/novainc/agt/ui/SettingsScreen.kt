@@ -19,6 +19,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.novainc.agt.BuildConfig
@@ -125,8 +126,18 @@ fun SettingsScreen(onBack: () -> Unit) {
 
 @Composable
 private fun StatusRow(label: String, value: String, valueColor: Color) {
+    // Both sides carry weight: an unweighted value takes its full
+    // width first and crushes the label into a one-letter column (the
+    // "FCM push" bug). Weighted, the label always keeps its share and
+    // a long value wraps inside its own column, right aligned.
     Row(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-        Text(label, color = AgtColors.TextDim, fontSize = 13.sp, modifier = Modifier.weight(1f))
-        Text(value, color = valueColor, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+        Text(
+            label, color = AgtColors.TextDim, fontSize = 13.sp,
+            modifier = Modifier.weight(1f).padding(end = 12.dp)
+        )
+        Text(
+            value, color = valueColor, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+            textAlign = TextAlign.End, modifier = Modifier.weight(1.3f)
+        )
     }
 }
