@@ -60,7 +60,7 @@ class AgtMessagingService : FirebaseMessagingService() {
                     com.novainc.agt.agent.DeviceIdentity(applicationContext, store)
                         .publicKeyBase64()
                 } catch (e: Exception) {
-                    fresh.devicePublicKey
+                    store.loadSettings().devicePublicKey
                 }
                 SupabaseLeg(store).upsertHost(deviceId, "AGT host $deviceId", publicKey, telemetry)
             } catch (e: Exception) {
