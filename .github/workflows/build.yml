@@ -41,7 +41,7 @@ jobs:
           cp native-binaries/proot-aarch64 app/src/main/jniLibs/arm64-v8a/libproot.so
           cp native-binaries/cloudflared-arm64 app/src/main/jniLibs/arm64-v8a/libcloudflared.so
           cat rootfs-parts/debian-bookworm-agt-arm64.tar.gz.part* > app/src/main/assets/debian-bookworm-agt-arm64.bundle
-          echo "cf221b91bfac1021ea7861b821af94619bd29c60c4edd5ac57321d0602b7d05d  app/src/main/assets/debian-bookworm-agt-arm64.bundle" | sha256sum -c -
+          echo "39a1a3304250d3096c2f366e4265039f35ca9478d71511ee884252a9ae3758b8  app/src/main/assets/debian-bookworm-agt-arm64.bundle" | sha256sum -c -
           ls -la app/src/main/jniLibs/arm64-v8a/ app/src/main/assets/
 
       - name: Run unit tests and build the debug APK

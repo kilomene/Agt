@@ -44,7 +44,7 @@ object AgtConfig {
         "https://raw.githubusercontent.com/kilomene/Agt/main/rootfs-parts/" +
             "debian-bookworm-agt-arm64.tar.gz.part%02d".format(i)
     }
-    const val ROOTFS_SHA256 = "cf221b91bfac1021ea7861b821af94619bd29c60c4edd5ac57321d0602b7d05d"
-    const val ROOTFS_SIZE_BYTES = 101060887L
-    const val ROOTFS_VERSION = "bookworm-agt-v1"
+    const val ROOTFS_SHA256 = "39a1a3304250d3096c2f366e4265039f35ca9478d71511ee884252a9ae3758b8"
+    const val ROOTFS_SIZE_BYTES = 101443235L
+    const val ROOTFS_VERSION = "bookworm-agt-v2"
 }

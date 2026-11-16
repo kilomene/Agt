@@ -31,7 +31,12 @@ class DeploymentEngine(
     private val proot: Proot,
     private val supervisor: ProcessSupervisor
 ) {
-    fun createFromTemplate(template: Template, name: String): Deployment {
+    fun createFromTemplate(
+        template: Template, name: String,
+        command: String = template.command,
+        port: Int = template.port,
+        env: Map<String, String> = template.env
+    ): Deployment {
         val id = UUID.randomUUID().toString()
         val dir = store.deploymentDir(id)
         val guestWorkdir = "/root/deployments/$id"
@@ -40,20 +45,44 @@ class DeploymentEngine(
             f.parentFile?.mkdirs()
             f.writeText(content)
         }
+        val list = store.loadDeployments()
         val deployment = Deployment(
             id = id,
             name = name,
             kind = template.id,
             source = "template:${template.id}",
-            command = template.command,
+            command = command,
             workdir = guestWorkdir,
-            env = template.env,
-            port = template.port
+            env = env,
+            port = port,
+            slug = uniqueSlug(name, id, list.map { effectiveSlug(it) }.toSet())
         )
-        val list = store.loadDeployments()
         list.add(deployment)
         store.saveDeployments(list)
         return deployment
+    }
+
+    /** Give every stored deployment a unique slug. Rows written by
+     * older builds have none and fall back to the name-derived slug,
+     * which two same-named deployments share. Idempotent: a row
+     * that already holds a slug keeps it. Called at service start,
+     * before the first sync publishes the deployments. */
+    fun backfillSlugs() {
+        val list = store.loadDeployments()
+        if (list.none { storedSlug(it).isBlank() }) return
+        val taken = list.map { storedSlug(it) }.filter { it.isNotBlank() }.toMutableSet()
+        var changed = false
+        val updated = list.map { d ->
+            if (storedSlug(d).isNotBlank()) {
+                d
+            } else {
+                val s = uniqueSlug(d.name, d.id, taken)
+                taken += s
+                changed = true
+                d.copy(slug = s)
+            }
+        }
+        if (changed) store.saveDeployments(updated)
     }
 
     /**
@@ -86,6 +115,7 @@ class DeploymentEngine(
             }
             extractTarball(tmp, dir)
             tmp.delete()
+            val list = store.loadDeployments()
             val deployment = Deployment(
                 id = id,
                 name = name,
@@ -96,9 +126,9 @@ class DeploymentEngine(
                 env = env,
                 port = port,
                 autoRestart = autoRestart,
-                batteryGuard = batteryGuard
+                batteryGuard = batteryGuard,
+                slug = uniqueSlug(name, id, list.map { effectiveSlug(it) }.toSet())
             )
-            val list = store.loadDeployments()
             list.add(deployment)
             store.saveDeployments(list)
             deployment
@@ -115,6 +145,7 @@ class DeploymentEngine(
             val id = UUID.randomUUID().toString()
             val dir = store.deploymentDir(id)
             extractTarball(bundle, dir)
+            val list = store.loadDeployments()
             val deployment = Deployment(
                 id = id,
                 name = name,
@@ -125,9 +156,9 @@ class DeploymentEngine(
                 env = env,
                 port = port,
                 autoRestart = autoRestart,
-                batteryGuard = batteryGuard
+                batteryGuard = batteryGuard,
+                slug = uniqueSlug(name, id, list.map { effectiveSlug(it) }.toSet())
             )
-            val list = store.loadDeployments()
             list.add(deployment)
             store.saveDeployments(list)
             deployment
@@ -169,6 +200,36 @@ class DeploymentEngine(
         store.snapshotsDir().listFiles()?.sortedByDescending { it.lastModified() } ?: emptyList()
 
     companion object {
+        /** The slug actually stored on a row, tolerating rows the
+         * JSON loader hydrated without one: Gson does not apply
+         * Kotlin default values, so a field added in v1.6.6 reads
+         * back null, not "", in files written by older builds.
+         * Every slug read goes through here. */
+        fun storedSlug(d: Deployment): String {
+            val raw: String? = d.slug
+            return if (raw.isNullOrBlank()) "" else raw
+        }
+
+        /** The subdomain slug a deployment answers to: its stored
+         * slug, or the name-derived slug for rows written before
+         * slugs were stored. */
+        fun effectiveSlug(d: Deployment): String =
+            storedSlug(d).ifBlank { com.novainc.agt.ui.slugify(d.name) }.ifBlank { "deployment" }
+
+        /** A slug no other deployment holds. The first deployment
+         * of a name keeps the clean slug; a later one gets the same
+         * base plus a unique code from its own id, so two servers
+         * can never share one address (the field bug the owner
+         * caught: four deployments named pic all answering to
+         * pic.agt.novamail.store). */
+        fun uniqueSlug(name: String, id: String, taken: Set<String>): String {
+            val base = com.novainc.agt.ui.slugify(name).ifBlank { "deployment" }
+            if (base !in taken) return base
+            val short = "$base-${id.take(4)}"
+            if (short !in taken) return short
+            return "$base-${id.take(8)}"
+        }
+
         /**
          * Turn a repo URL into its codeload tarball URL. Accepts
          * https://github.com/owner/repo and .../tree/branch forms.

@@ -101,6 +101,152 @@ class Proot(private val context: Context, private val store: AgtStore) {
             timeoutSec = timeoutSec
         )
 
+    data class Diagnosis(val consoleOk: Boolean, val baselineLine: String, val report: String)
+
+    private val bashEcho = listOf("/bin/bash", "-c", "echo AGT_LINUX_OK")
+
+    /** The v1.6.6 diagnostic ladder. The guest dies on the phone
+     * with exit 255 and total silence while the identical tree runs
+     * under emulation and on the amd64 bench, so no off-phone test
+     * can find the fault: the phone itself has to say which step
+     * kills it. Each rung changes exactly one variable of the
+     * failing invocation, and the whole ladder rides telemetry as
+     * linuxLadder, so the verdict is readable from here.
+     *   H   content hashes of the files the loader chain reads,
+     *       plus the /lib link target: rules the extractor in or out.
+     *   R1  the baseline invocation, exactly as shipped (fake root,
+     *       cleared environment, verbose proot).
+     *   R2  baseline without the fake-root flag.
+     *   R3  baseline with the app environment inherited, not cleared.
+     *   R4  a static ELF (cloudflared) bound into the rootfs and run
+     *       directly: proot and ptrace inside the guest, with no
+     *       dynamic loader involved.
+     *   R5  the dynamic loader itself as the tracee: whether the
+     *       interpreter file can execute at all under proot here. */
+    fun diagnoseGuest(): Diagnosis {
+        val lines = mutableListOf<String>()
+        lines += hashLine()
+        val r1 = selfTest()
+        val ok1 = r1.exitCode == 0 && r1.stdout.contains("AGT_LINUX_OK")
+        val base = rungLine("R1 base", r1)
+        lines += base
+        lines += rungLine(
+            "R2 no0",
+            runArgv(
+                prootArgv(fakeRoot = false, tail = bashEcho),
+                clearEnv = true, env = mapOf("PROOT_VERBOSE" to "2"), timeoutSec = 20
+            )
+        )
+        lines += rungLine(
+            "R3 env",
+            runArgv(
+                prootArgv(fakeRoot = true, tail = bashEcho),
+                clearEnv = false, env = mapOf("PROOT_VERBOSE" to "2"), timeoutSec = 20
+            )
+        )
+        val cf = File(context.applicationInfo.nativeLibraryDir, "libcloudflared.so")
+        lines += if (cf.exists()) {
+            rungLine(
+                "R4 static",
+                runArgv(
+                    prootArgv(
+                        fakeRoot = true,
+                        binds = listOf(cf.absolutePath to "/usr/local/bin/cfstatic"),
+                        tail = listOf("/usr/local/bin/cfstatic", "--version")
+                    ),
+                    clearEnv = true, env = emptyMap(), timeoutSec = 20
+                )
+            )
+        } else {
+            "R4 static exit=-2 out='cloudflared binary missing'"
+        }
+        lines += rungLine(
+            "R5 loader",
+            runArgv(
+                prootArgv(fakeRoot = true, tail = listOf("/lib/ld-linux-aarch64.so.1", "--version")),
+                clearEnv = true, env = emptyMap(), timeoutSec = 20
+            )
+        )
+        return Diagnosis(ok1, base, lines.joinToString("\n"))
+    }
+
+    /** One ladder rung as a single telemetry line: name, exit code,
+     * and the output squashed onto one line and bounded. */
+    private fun rungLine(name: String, r: RunResult): String {
+        val out = (r.stdout + r.stderr).replace(Regex("\\s+"), " ").trim().take(110)
+        return "$name exit=${r.exitCode} out='$out'"
+    }
+
+    /** Hashes of the exact files the guest loader chain reads,
+     * first 12 hex chars each, plus the /lib link state. Compared
+     * against the known-good bundle off-phone, they prove whether
+     * the bytes on the phone are the bytes that run under
+     * emulation, which rules the Java extractor in or out. */
+    private fun hashLine(): String {
+        fun h(rel: String): String = try {
+            sha256(File(rootfsDir, rel)).take(12)
+        } catch (e: Exception) {
+            "ERR"
+        }
+        val libTarget = try {
+            val lib = File(rootfsDir, "lib")
+            if (isSymlink(lib)) android.system.Os.readlink(lib.path) else "NOTLINK"
+        } catch (e: Exception) {
+            "ERR"
+        }
+        return "H bash=${h("usr/bin/bash")} ld=${h("lib/ld-linux-aarch64.so.1")} " +
+            "libc=${h("usr/lib/aarch64-linux-gnu/libc.so.6")} " +
+            "py=${h("usr/bin/python3.11")} lib->$libTarget"
+    }
+
+    /** Build a raw proot argv with a caller-chosen tracee, for the
+     * diagnostic ladder. Mirrors buildProotCommand's flags so a rung
+     * differs from the shipped invocation only where it means to. */
+    private fun prootArgv(
+        fakeRoot: Boolean,
+        binds: List<Pair<String, String>> = emptyList(),
+        tail: List<String>
+    ): List<String> {
+        tmpDir.mkdirs()
+        val cmd = mutableListOf(prootBin.absolutePath, "-R", rootfsDir.absolutePath)
+        if (fakeRoot) cmd += "-0"
+        cmd += listOf("-w", "/root", "-b", "/dev", "-b", "/proc", "-b", "/sys")
+        for ((host, guest) in binds) cmd += listOf("-b", "$host:$guest")
+        cmd += tail
+        return cmd
+    }
+
+    /** Run an explicit argv, capturing both streams: the diagnostic
+     * ladder's raw proot invocations. clearEnv mirrors the shipped
+     * behaviour; the ladder's R3 rung turns it off. */
+    fun runArgv(
+        argv: List<String>,
+        clearEnv: Boolean,
+        env: Map<String, String>,
+        timeoutSec: Long
+    ): RunResult {
+        val pb = ProcessBuilder(argv)
+        if (clearEnv) pb.environment().clear()
+        pb.environment().putAll(envFor(env).associate {
+            val i = it.indexOf('=')
+            it.substring(0, i) to it.substring(i + 1)
+        })
+        pb.redirectErrorStream(false)
+        val proc = pb.start()
+        val out = StringBuilder()
+        val err = StringBuilder()
+        val tOut = Thread { proc.inputStream.bufferedReader().forEachLine { out.append(it).append('\n') } }
+        val tErr = Thread { proc.errorStream.bufferedReader().forEachLine { err.append(it).append('\n') } }
+        tOut.start(); tErr.start()
+        val finished = proc.waitFor(timeoutSec, TimeUnit.SECONDS)
+        if (!finished) {
+            proc.destroyForcibly()
+            return RunResult(-1, out.toString(), "timed out after ${timeoutSec}s\n" + err)
+        }
+        tOut.join(2000); tErr.join(2000)
+        return RunResult(proc.exitValue(), out.toString(), err.toString())
+    }
+
     /** The merged-usr layout repair: /lib as a symlink to usr/lib.
      * Idempotent. A /lib that is already the right symlink is left
      * alone; anything else there (a real directory holding only the
@@ -123,10 +269,64 @@ class Proot(private val context: Context, private val store: AgtStore) {
     /** Repair the layout of a tree extracted by an older build, in
      * place, without re-extracting 100 MB. Called at service start
      * before anything consults isInstalled(), so an upgraded phone
-     * heals its existing tree on the first launch. */
+     * heals its existing tree on the first launch. The merge runs
+     * first: the shipped tarball's /lib was a real directory holding
+     * a dozen libraries that exist nowhere in usr/lib, and replacing
+     * the directory with the symlink without merging orphans them
+     * (the v1.6.5 repair did exactly that: bash survived, python3
+     * died on the missing libexpat). */
     fun repairLayout() {
         if (!rootfsDir.exists()) return
+        mergeLibDir()
         ensureLibSymlink()
+    }
+
+    /** Copy every entry of a real /lib directory into usr/lib,
+     * preserving relative paths, link targets and permission bits,
+     * skipping anything usr/lib already has. Runs before the /lib
+     * symlink replaces the directory, so nothing the tree shipped
+     * is lost. A /lib that is already a symlink (or absent) needs
+     * no merge. */
+    private fun mergeLibDir() {
+        val lib = File(rootfsDir, "lib")
+        if (!lib.isDirectory || isSymlink(lib)) return
+        val usrLib = File(rootfsDir, "usr/lib")
+        lib.walkTopDown().forEach { f ->
+            if (f == lib) return@forEach
+            val rel = lib.toPath().relativize(f.toPath()).toString()
+            val dest = File(usrLib, rel)
+            when {
+                isSymlink(f) -> {
+                    if (!dest.exists() && !isSymlink(dest)) {
+                        dest.parentFile?.mkdirs()
+                        try {
+                            android.system.Os.symlink(
+                                android.system.Os.readlink(f.path), dest.path
+                            )
+                        } catch (e: Exception) {
+                            // A link that cannot be recreated is
+                            // skipped; treeIntact() judges the result.
+                        }
+                    }
+                }
+                f.isDirectory -> dest.mkdirs()
+                f.isFile -> {
+                    if (!dest.exists()) {
+                        dest.parentFile?.mkdirs()
+                        f.copyTo(dest, overwrite = false)
+                        try {
+                            android.system.Os.chmod(
+                                dest.path,
+                                android.system.Os.lstat(f.path).st_mode and 0x1FF
+                            )
+                        } catch (e: Exception) {
+                            // Mode copy is best effort; the exec-bit
+                            // checks in treeIntact() judge the result.
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /**
@@ -177,13 +377,10 @@ class Proot(private val context: Context, private val store: AgtStore) {
                 }
                 // The merged-usr layout: /lib must be a symlink to
                 // usr/lib, the layout Debian ships and every path in
-                // the tree assumes. The rootfs tarball omits that
-                // symlink, and creating /lib as a real directory
-                // holding only a loader link (the previous approach)
-                // leaves the interpreter path half-fixed while every
-                // library path ld.so.cache stores under that tree still
-                // points into a void, so the loader cannot find libc
-                // and no guest program, bash included, can start.
+                // the tree assumes. The v1 bundle omitted that
+                // symlink and split a dozen libraries into a real
+                // /lib directory; bundle v2 ships the merged layout,
+                // and this call keeps any tree honest regardless.
                 ensureLibSymlink()
                 if (!treeIntact()) {
                     return@withContext Result.failure(

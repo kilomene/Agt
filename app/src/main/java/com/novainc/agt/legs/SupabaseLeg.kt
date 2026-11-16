@@ -157,7 +157,18 @@ class SupabaseLeg(private val store: AgtStore) {
             addProperty("source", deployment.source)
             addProperty("status", deployment.status)
             addProperty("port", deployment.port)
-            add("config", JsonObject().apply { addProperty("command", deployment.command) })
+            add("config", JsonObject().apply {
+                addProperty("command", deployment.command)
+                // The deployment's unique subdomain slug rides in
+                // config so the domain reconciler wires the stored
+                // address, the same one the app shows, instead of
+                // re-deriving it from a name another deployment
+                // may share.
+                addProperty(
+                    "slug",
+                    com.novainc.agt.deploy.DeploymentEngine.effectiveSlug(deployment)
+                )
+            })
         }
         val req = request("/rest/v1/deployments?on_conflict=id", "POST", gson.toJson(body))
             .newBuilder().header("Prefer", "resolution=merge-duplicates").build()

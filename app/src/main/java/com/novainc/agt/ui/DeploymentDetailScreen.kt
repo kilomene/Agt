@@ -111,7 +111,7 @@ fun DeploymentDetailScreen(deploymentId: String, onBack: () -> Unit, onOpenConso
         val running = d.status == "running"
         val proc = process
         AgtCard {
-            InfoRow("Subdomain", subdomainOf(d.name), AgtColors.Gold)
+            InfoRow("Subdomain", subdomainOf(d), AgtColors.Gold)
             InfoDivider()
             InfoRow(
                 "Port",

@@ -22,7 +22,13 @@ data class Deployment(
     val autoRestart: Boolean = true,
     val batteryGuard: Boolean = false,
     val status: String = "stopped",
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    // The deployment's unique subdomain slug under
+    // agt.novamail.store, assigned once at creation and never
+    // shared: two deployments with the same name still get two
+    // different addresses. Empty on rows written by older builds;
+    // DeploymentEngine.backfillSlugs() fills those in at start.
+    val slug: String = ""
 )
 
 data class ProcessRecord(

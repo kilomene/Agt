@@ -59,6 +59,13 @@ class AgtRuntime private constructor(private val context: Context) {
     private val _linuxDetail = MutableStateFlow("")
     val linuxDetail: StateFlow<String> = _linuxDetail.asStateFlow()
 
+    /** The v1.6.6 diagnostic ladder report: per-rung exit codes and
+     * output from diagnoseGuest(), plus content hashes of the guest
+     * loader chain. Rides telemetry as linuxLadder so a guest that
+     * cannot start explains itself from the phone. */
+    private val _linuxLadder = MutableStateFlow("")
+    val linuxLadder: StateFlow<String> = _linuxLadder.asStateFlow()
+
     private val _installProgress = MutableStateFlow(0f)
     val installProgress: StateFlow<Float> = _installProgress.asStateFlow()
 
@@ -109,6 +116,7 @@ class AgtRuntime private constructor(private val context: Context) {
             addProperty("linuxReady", proot.isInstalled())
             addProperty("linuxConsoleOk", _linuxConsoleOk.value)
             addProperty("linuxDetail", _linuxDetail.value.take(160))
+            addProperty("linuxLadder", _linuxLadder.value.take(1800))
             addProperty("appVersion", com.novainc.agt.BuildConfig.VERSION_NAME)
             addProperty("firebaseKeySet", firebase.hasUsableKey())
             addProperty("tunnelState", tunnel.state.value.name)
@@ -154,14 +162,13 @@ class AgtRuntime private constructor(private val context: Context) {
         scope.launch {
             if (!proot.isInstalled()) return@launch
             try {
-                val r = proot.selfTest()
-                val ok = r.exitCode == 0 && r.stdout.contains("AGT_LINUX_OK")
-                _linuxConsoleOk.value = ok
-                _linuxDetail.value = if (ok) {
+                val d = proot.diagnoseGuest()
+                _linuxConsoleOk.value = d.consoleOk
+                _linuxLadder.value = d.report
+                _linuxDetail.value = if (d.consoleOk) {
                     "guest shell answered AGT_LINUX_OK"
                 } else {
-                    val out = (r.stderr.ifBlank { r.stdout }).trim()
-                    ("exit ${r.exitCode}: $out").takeLast(160)
+                    d.baselineLine.takeLast(160)
                 }
             } catch (e: Exception) {
                 _linuxConsoleOk.value = false
@@ -275,6 +282,11 @@ class AgtRuntime private constructor(private val context: Context) {
         // the merged-usr symlink leaves the guest loader unable to
         // find any library, and every guest process dies at start.
         try { proot.repairLayout() } catch (e: Exception) { }
+        // Unique subdomains: deployments stored by older builds
+        // carry no slug and would share the name-derived address
+        // with any same-named deployment. Fill the slugs in before
+        // the first sync publishes them.
+        try { deployEngine.backfillSlugs() } catch (e: Exception) { }
         supervisor.restoreAll()
         // The tunnel token is baked into the build from the CI secret.
         // No Settings entry exists and none is needed.

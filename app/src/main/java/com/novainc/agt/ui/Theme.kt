@@ -82,6 +82,12 @@ fun slugify(name: String): String =
 
 fun subdomainOf(name: String): String = slugify(name) + ".agt.novamail.store"
 
+/** The deployment's own public address: built from its stored
+ * unique slug, never from the bare name alone, so the address on
+ * the card is one no other deployment can claim. */
+fun subdomainOf(d: Deployment): String =
+    com.novainc.agt.deploy.DeploymentEngine.effectiveSlug(d) + ".agt.novamail.store"
+
 /** Runtime word for a deployment, read from its real start command. */
 fun runtimeLabel(d: Deployment): String = when {
     d.command.startsWith("node") -> "Node 18"

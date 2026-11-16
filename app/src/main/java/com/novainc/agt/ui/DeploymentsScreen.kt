@@ -192,7 +192,7 @@ private fun DeploymentCard(
                 Spacer(Modifier.width(16.dp))
             }
             Text(
-                subdomainOf(deployment.name),
+                subdomainOf(deployment),
                 color = AgtColors.TextPrimary, fontSize = 12.5.sp, fontFamily = FontFamily.Monospace
             )
         }
