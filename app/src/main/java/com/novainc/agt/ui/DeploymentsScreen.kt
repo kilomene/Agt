@@ -141,6 +141,9 @@ private fun DeploymentCard(
     onRestart: () -> Unit
 ) {
     val running = deployment.status == "running"
+    // Under the supervisor's hand: restart and stop apply, not start.
+    val active = running || deployment.status == "starting" ||
+        deployment.status == "crash-looping"
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -171,13 +174,16 @@ private fun DeploymentCard(
             }
             TintedPill(
                 when {
+                    deployment.status == "crash-looping" -> "CRASH-LOOPING"
                     running && healthy -> "RUNNING"
                     running -> "STARTING"
+                    deployment.status == "starting" -> "STARTING"
                     else -> "STOPPED"
                 },
                 when {
                     running && healthy -> AgtColors.Emerald
                     running -> AgtColors.Amber
+                    deployment.status == "starting" -> AgtColors.Amber
                     else -> AgtColors.Danger
                 },
                 pulsing = running && healthy
@@ -209,11 +215,16 @@ private fun DeploymentCard(
         Spacer(Modifier.height(12.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                if (running && process != null) "up ${formatUptimeShort(nowMs - process.startedAt)}" else "stopped",
+                when {
+                    running && process != null -> "up ${formatUptimeShort(nowMs - process.startedAt)}"
+                    deployment.status == "crash-looping" -> "crash-looping"
+                    deployment.status == "starting" -> "starting"
+                    else -> "stopped"
+                },
                 color = AgtColors.TextDim, fontSize = 12.5.sp, fontFamily = FontFamily.Monospace
             )
             Spacer(Modifier.weight(1f))
-            if (running) {
+            if (active) {
                 RoundAction(IconKind.Refresh, AgtColors.TextPrimary) { onRestart() }
                 Spacer(Modifier.width(10.dp))
                 RoundStop { onStop() }

@@ -18,14 +18,24 @@ import java.util.concurrent.ConcurrentHashMap
 
 /**
  * The deployment supervisor: starts, stops, restarts and watches every
- * deployment. A deployment is a supervised PRoot guest process with its
+ * deployment. A deployment is a supervised native process with its
  * own work directory and log file. On service start it restores every
  * deployment that was running, so the host comes back by itself.
+ *
+ * Status honesty: the stored status is DERIVED from what the process
+ * actually did, never asserted at spawn time. A fresh process is
+ * "starting"; it earns "running" only by staying alive past
+ * EARNED_RUNNING_MS under the watcher's eye; a process that keeps
+ * dying fast (CRASH_LOOP_FAST_EXITS consecutive exits, each alive less
+ * than FAST_EXIT_MS) is "crash-looping". Every surface reads the same
+ * stored status (the deployment screens, the sync upsert to Supabase,
+ * the domain reconciler downstream of it), so a crash-looping
+ * deployment can no longer read as running anywhere.
  */
 class ProcessSupervisor(
     private val context: Context,
     private val store: AgtStore,
-    private val proot: Proot
+    private val linux: NativeLinux
 ) {
     private val scope = CoroutineScope(Dispatchers.Default + Job())
     private val running = ConcurrentHashMap<String, Process>()
@@ -37,16 +47,66 @@ class ProcessSupervisor(
      * Wired by AgtRuntime to the phone's alert notifications. */
     var onEvent: ((title: String, text: String) -> Unit)? = null
 
+    /** What one deployment's process actually did, kept by the
+     * supervisor (in memory; an app restart starts the account fresh
+     * and every status is re-earned). countedStart is the startedAt of
+     * the process instance whose exit has already been accounted, so a
+     * battery-guard hold re-entering the exit branch cannot count the
+     * same death twice. */
+    private class DepHealth {
+        var fastExits: Int = 0
+        var countedStart: Long = 0L
+        var promotedStart: Long = 0L
+        var awaitingRecovery: Boolean = false
+    }
+
+    private val health = ConcurrentHashMap<String, DepHealth>()
+
+    private companion object {
+        /** A process earns "running" by staying alive this long. */
+        const val EARNED_RUNNING_MS = 15_000L
+
+        /** An exit after less than this alive counts as a fast exit. */
+        const val FAST_EXIT_MS = 15_000L
+
+        /** Consecutive fast exits that make a deployment crash-looping. */
+        const val CRASH_LOOP_FAST_EXITS = 3
+    }
+
+    /** The status a deployment has right now by the supervisor's own
+     * account: crash-looping once the fast-exit count reaches the
+     * threshold, otherwise starting (running is only ever written by
+     * the watcher's promotion, never here). */
+    private fun derivedStatus(deploymentId: String): String {
+        val h = health[deploymentId]
+        return if ((h?.fastExits ?: 0) >= CRASH_LOOP_FAST_EXITS) {
+            "crash-looping"
+        } else {
+            "starting"
+        }
+    }
+
+    /** Write one status to both stores, so the process record and the
+     * deployment row can never disagree. */
+    private fun setStatuses(deploymentId: String, status: String) {
+        updateProcessStatus(deploymentId, status)
+        setDeploymentStatus(deploymentId, status)
+    }
+
     /** Start a deployment (or restart it if it is already running). */
     @Synchronized
     fun start(deployment: Deployment): ProcessRecord {
         stop(deployment.id)
-        val workdir = deployment.workdir.ifEmpty { "/root" }
         val logFile = store.logFileFor(deployment.id)
         val hostDir = store.deploymentDir(deployment.id)
-        val proc = proot.startBackground(
-            deployment.command, workdir, deployment.env, logFile,
-            binds = listOf(hostDir.absolutePath to workdir)
+        // Native process: the deployment's own directory is its
+        // working directory and (unless its env overrides it) its
+        // HOME. In the guest era the same directory was bind
+        // mounted into the rootfs at the deployment's workdir;
+        // natively no mount is needed for the files to be exactly
+        // where the process works.
+        val proc = linux.startBackground(
+            deployment.command, hostDir, deployment.env, logFile
         )
         val record = ProcessRecord(
             id = deployment.id,
@@ -56,12 +116,16 @@ class ProcessSupervisor(
             pid = pidOf(proc),
             startedAt = System.currentTimeMillis(),
             restarts = 0,
-            status = "running",
+            // Spawned is not running: the record carries the derived
+            // status (starting, or crash-looping when the fast-exit
+            // count says this deployment is in a loop) until the
+            // watcher promotes it on earned uptime.
+            status = derivedStatus(deployment.id),
             logPath = logFile.absolutePath
         )
         running[deployment.id] = proc
         upsertProcess(record)
-        setDeploymentStatus(deployment.id, "running")
+        setDeploymentStatus(deployment.id, record.status)
         watch(deployment)
         return record
     }
@@ -80,6 +144,10 @@ class ProcessSupervisor(
         }
         updateProcessStatus(deploymentId, "stopped")
         setDeploymentStatus(deploymentId, "stopped")
+        // A deliberate stop ends any pending recovery: if the owner
+        // starts it again later and it earns running, that is a fresh
+        // start, not a comeback the watcher should announce.
+        health[deploymentId]?.awaitingRecovery = false
     }
 
     @Synchronized
@@ -134,42 +202,81 @@ class ProcessSupervisor(
             while (isActive) {
                 delay(5000)
                 val proc = running[deployment.id] ?: break
-                if (!proc.isAlive) {
-                    val exit = try { proc.exitValue() } catch (e: Exception) { -1 }
-                    appendLog(deployment.id, "\n[agt] process exited with code $exit\n")
-                    if (deployment.batteryGuard && batteryGuardHolds()) {
-                        // The guard the New Deployment form promises:
-                        // a low, unplugged battery holds the restart
-                        // (silently, no alert spam) until power returns.
-                        appendLog(deployment.id, "[agt] battery guard: restart held, battery low and not charging\n")
-                        delay(60_000)
-                        continue
+                if (proc.isAlive) {
+                    // Earned, not assumed: a process instance that
+                    // stays alive past the threshold promotes its
+                    // deployment to running, clears the fast-exit
+                    // account, and is the only moment a "back up"
+                    // event may fire (for an instance the watcher
+                    // saw die). Before this change, start() asserted
+                    // running at spawn and the back-up event fired at
+                    // respawn, so a deployment dying inside a second,
+                    // forever, read as running on every surface.
+                    val h = health.getOrPut(deployment.id) { DepHealth() }
+                    val rec = store.loadProcesses()
+                        .firstOrNull { it.deploymentId == deployment.id }
+                    val startedAt = rec?.startedAt ?: 0L
+                    if (startedAt != 0L && startedAt != h.promotedStart &&
+                        System.currentTimeMillis() - startedAt >= EARNED_RUNNING_MS
+                    ) {
+                        h.promotedStart = startedAt
+                        h.fastExits = 0
+                        setStatuses(deployment.id, "running")
+                        if (h.awaitingRecovery) {
+                            h.awaitingRecovery = false
+                            onEvent?.invoke(
+                                "Deployment back up: ${deployment.name}",
+                                "${deployment.name} restarted and is running again."
+                            )
+                        }
                     }
-                    if (deployment.autoRestart) {
-                        onEvent?.invoke(
-                            "Deployment down: ${deployment.name}",
-                            "${deployment.name} exited with code $exit. Restarting it now."
-                        )
-                        appendLog(deployment.id, "[agt] restarting in ${backoffMs / 1000}s\n")
-                        delay(backoffMs)
-                        backoffMs = (backoffMs * 2).coerceAtMost(30_000L)
-                        val old = store.loadProcesses().firstOrNull { it.deploymentId == deployment.id }
-                        val record = start(deployment)
-                        upsertProcess(record.copy(restarts = (old?.restarts ?: 0) + 1))
-                        onEvent?.invoke(
-                            "Deployment back up: ${deployment.name}",
-                            "${deployment.name} restarted and is running again."
-                        )
-                        backoffMs = 1000L
-                    } else {
-                        onEvent?.invoke(
-                            "Deployment stopped: ${deployment.name}",
-                            "${deployment.name} exited with code $exit and auto-restart is off."
-                        )
-                        updateProcessStatus(deployment.id, "stopped")
-                        setDeploymentStatus(deployment.id, "stopped")
-                        break
-                    }
+                    continue
+                }
+                val exit = try { proc.exitValue() } catch (e: Exception) { -1 }
+                appendLog(deployment.id, "\n[agt] process exited with code $exit\n")
+                // Account this death once per process instance: how
+                // long it lived decides whether it was a fast exit,
+                // and the derived status is written BEFORE any
+                // restart, so the deployment never passes through a
+                // stored "running" on its way around the loop.
+                val h = health.getOrPut(deployment.id) { DepHealth() }
+                val rec = store.loadProcesses()
+                    .firstOrNull { it.deploymentId == deployment.id }
+                val startedAt = rec?.startedAt ?: 0L
+                if (startedAt != 0L && startedAt != h.countedStart) {
+                    h.countedStart = startedAt
+                    val lived = System.currentTimeMillis() - startedAt
+                    if (lived < FAST_EXIT_MS) h.fastExits++ else h.fastExits = 0
+                    h.awaitingRecovery = true
+                    setStatuses(deployment.id, derivedStatus(deployment.id))
+                }
+                if (deployment.batteryGuard && batteryGuardHolds()) {
+                    // The guard the New Deployment form promises:
+                    // a low, unplugged battery holds the restart
+                    // (silently, no alert spam) until power returns.
+                    appendLog(deployment.id, "[agt] battery guard: restart held, battery low and not charging\n")
+                    delay(60_000)
+                    continue
+                }
+                if (deployment.autoRestart) {
+                    onEvent?.invoke(
+                        "Deployment down: ${deployment.name}",
+                        "${deployment.name} exited with code $exit. Restarting it now."
+                    )
+                    appendLog(deployment.id, "[agt] restarting in ${backoffMs / 1000}s\n")
+                    delay(backoffMs)
+                    backoffMs = (backoffMs * 2).coerceAtMost(30_000L)
+                    val old = store.loadProcesses().firstOrNull { it.deploymentId == deployment.id }
+                    val record = start(deployment)
+                    upsertProcess(record.copy(restarts = (old?.restarts ?: 0) + 1))
+                    backoffMs = 1000L
+                } else {
+                    onEvent?.invoke(
+                        "Deployment stopped: ${deployment.name}",
+                        "${deployment.name} exited with code $exit and auto-restart is off."
+                    )
+                    setStatuses(deployment.id, "stopped")
+                    break
                 }
             }
         }
@@ -187,12 +294,15 @@ class ProcessSupervisor(
         }
     }
 
-    /** Restore every deployment that was running when the service last ran. */
+    /** Restore every deployment that was meant to be up when the
+     * service last ran: anything not deliberately stopped. Running,
+     * starting and crash-looping all restore; each re-earns its
+     * status under the watcher like any fresh start. */
     fun restoreAll() {
-        if (!proot.isInstalled()) return
+        if (!linux.isInstalled()) return
         val deployments = store.loadDeployments()
         for (d in deployments) {
-            if (d.status == "running") {
+            if (d.status != "stopped") {
                 try {
                     start(d)
                 } catch (e: Exception) {

@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -31,6 +32,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -40,6 +43,7 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -49,17 +53,17 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.novainc.agt.core.AgtRuntime
-import com.novainc.agt.linux.Proot
+import com.novainc.agt.linux.ShellSession
 import kotlinx.coroutines.delay
 
 /**
  * The Linux console, and it is a terminal: each tab is a real shell
- * session inside the Debian layer, running on a genuine
- * pseudo-terminal (see Proot.startShell), so the shell echoes
+ * session, a native process of the app running on a genuine
+ * pseudo-terminal (see NativeLinux.startShell), so the shell echoes
  * typing itself, prints its own prompt, streams output live, and
  * takes control keys and interactive programs the way Termux does.
  * One session for the host plus one per deployment (started in the
- * deployment's own directory, with its files bound in), and a
+ * deployment's own directory, where its files simply are), and a
  * working key bar: ctrl, tab, esc, paste, and an extended keys row
  * with arrows. Every session is kept by a keeper in the app: if
  * its shell ever exits, a fresh one starts immediately and the
@@ -91,6 +95,25 @@ import kotlinx.coroutines.delay
  * and backspace line editing resolved, every other escape
  * sequence stripped, so coloured output shows as colour and no
  * escape garbage reaches the screen.
+ *
+ * The terminal surface is always composed: transcript, input
+ * field and key bar exist whether or not a shell has answered
+ * yet. The branch this replaces composed them only when the
+ * runtime's verdict was ready, so a guest that had not answered
+ * left a screen whose terminal box held one status sentence
+ * and nothing to type into: a dead box, in the owner's words
+ * nowhere to type. Readiness is now a status line above the
+ * terminal box (with the header pill), never a gate on the
+ * surface: it says what is true (setting up, installed but the
+ * shell has not answered yet, or the shell answered and through
+ * which shape), and install state never appears inside the
+ * terminal box as if it were shell output. Sessions are handed
+ * out by the runtime registry the moment the screen asks, ready
+ * or not: keys typed while a shell is still being raised go to
+ * the session's stream, and the keeper's restart notes in the
+ * transcript show what the shell is doing, so the screen is
+ * never a dead box. Tapping anywhere on the terminal surface
+ * focuses the input and raises the soft keyboard.
  */
 @Composable
 fun ConsoleScreen() {
@@ -98,6 +121,8 @@ fun ConsoleScreen() {
     val runtime = remember { AgtRuntime.get(context) }
     val clipboard = LocalClipboardManager.current
     val linuxReady by runtime.linuxReady.collectAsState()
+    val linuxDetail by runtime.linuxDetail.collectAsState()
+    val installStatus by runtime.installStatus.collectAsState()
     val deployments = remember { runtime.store.loadDeployments() }
 
     var extraHostSessions by remember { mutableStateOf(0) }
@@ -113,6 +138,8 @@ fun ConsoleScreen() {
     var ctrlArmed by remember { mutableStateOf(false) }
     var keysOpen by remember { mutableStateOf(false) }
     val scrollState = rememberScrollState()
+    val focusRequester = remember { FocusRequester() }
+    val keyboardController = LocalSoftwareKeyboardController.current
 
     fun tabLabel(i: Int): String = when {
         i == 0 -> "host"
@@ -131,9 +158,13 @@ fun ConsoleScreen() {
      * code bound the raw stored workdir, which is empty for
      * deployments that never set one and produced a malformed
      * bind argument; the supervisor's own launches already used
-     * the effective value). */
-    fun sessionFor(i: Int): Proot.ShellSession? {
-        if (!linuxReady) return null
+     * the effective value). There is deliberately no readiness
+     * gate on this lookup: the registry hands a session out the
+     * moment the screen asks, ready or not, so the console always
+     * has a living session stream to type into; while its shell
+     * is still being raised, the keeper's notes in the transcript
+     * say what it is doing. */
+    fun sessionFor(i: Int): ShellSession? {
         return try {
             when {
                 i == 0 || i > deployments.size ->
@@ -230,7 +261,7 @@ fun ConsoleScreen() {
     // runtime and outlive every screen (the pipe-era screen owned
     // its sessions and closed them all on dispose, so navigating
     // away killed every shell; that coupling is removed).
-    LaunchedEffect(activeTab, linuxReady) {
+    LaunchedEffect(activeTab) {
         while (true) {
             output = sessionFor(activeTab)?.snapshot() ?: ""
             delay(400)
@@ -312,6 +343,29 @@ fun ConsoleScreen() {
             }
         }
         Spacer(Modifier.height(12.dp))
+        // Readiness is a status line, and it lives here, above
+        // the terminal box, never inside it. Install and setup
+        // state is app chrome; the branch this replaces put it
+        // inside the box as the box's only content whenever the
+        // shell had not answered, which removed the transcript,
+        // the input and the keyboard from the screen entirely.
+        // The line says exactly what is true and cannot
+        // contradict the pill: setting up, installed but the
+        // shell has not answered yet, or the shell answered
+        // (linuxDetail names the shape it answered through).
+        val statusLine = when {
+            linuxReady -> linuxDetail
+                .ifEmpty { "The shell answered its probe." }
+                .replaceFirstChar { it.uppercase() }
+            installStatus.startsWith("Install failed") ->
+                "Linux setup hit a problem and is retrying on its own. The shell has not answered yet."
+            installStatus.isNotEmpty() && installStatus != "Linux ready" ->
+                "$installStatus The shell has not answered yet."
+            else ->
+                "Linux is installed; the shell has not answered yet. The app is working through its start shapes."
+        }
+        Text(statusLine, color = AgtColors.TextDim, fontSize = 12.sp)
+        Spacer(Modifier.height(8.dp))
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -319,118 +373,127 @@ fun ConsoleScreen() {
                 .clip(RoundedCornerShape(16.dp))
                 .background(AgtColors.MatteBlack)
                 .border(1.dp, AgtColors.Stroke, RoundedCornerShape(16.dp))
+                .clickable {
+                    // A tap anywhere on the terminal surface
+                    // focuses the input and raises the keyboard:
+                    // the surface is where typing goes, so touching
+                    // it is how the owner says so.
+                    focusRequester.requestFocus()
+                    keyboardController?.show()
+                }
                 .padding(14.dp)
         ) {
-            if (!linuxReady) {
-                val installStatus = runtime.installStatus.value
-                Text(
-                    when {
-                        installStatus.startsWith("Install failed") ->
-                            "Linux setup hit a problem and is retrying on its own. $installStatus"
-                        installStatus.isNotEmpty() -> installStatus
-                        else ->
-                            "Linux sets itself up on first start. Once it is ready, this console opens a real shell inside Debian."
-                    },
-                    color = AgtColors.TextDim, fontSize = 13.sp
-                )
-            } else {
-                Column(Modifier.fillMaxSize()) {
-                    Box(Modifier.weight(1f)) {
-                        Column(
-                            Modifier
-                                .fillMaxSize()
-                                .verticalScroll(scrollState)
-                        ) {
-                            Text(
-                                rendered,
-                                color = AgtColors.TextPrimary,
-                                fontSize = 11.5.sp,
-                                fontFamily = FontFamily.Monospace
-                            )
-                        }
-                    }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        // No drawn prompt here: the prompt belongs to
-                        // the shell and appears in the transcript
-                        // above, printed by bash itself on its pty. A
-                        // static "agt@host" label would be the app
-                        // pretending to be the shell. The field below
-                        // draws no text of its own either: it is a
-                        // capture surface for the keyboard, kept
-                        // empty, and the hint under it is app
-                        // chrome, not shell output.
-                        BasicTextField(
-                            value = fieldValue,
-                            onValueChange = { onFieldChange(it) },
-                            singleLine = true,
-                            textStyle = TextStyle(
-                                color = AgtColors.TextPrimary, fontSize = 12.5.sp,
-                                fontFamily = FontFamily.Monospace
-                            ),
-                            cursorBrush = SolidColor(AgtColors.Gold),
-                            modifier = Modifier
-                                .weight(1f)
-                                .onPreviewKeyEvent { event ->
-                                    // Hardware and external keyboards:
-                                    // the keys a terminal lives on are
-                                    // forwarded as their terminal bytes
-                                    // and consumed, so they never also
-                                    // land in the field as text.
-                                    if (event.type != KeyEventType.KeyDown) {
-                                        false
-                                    } else {
-                                        val session = sessionFor(activeTab)
-                                        val bytes: String? = when {
-                                            event.isCtrlPressed &&
-                                                event.key.keyCode in Key.A.keyCode..Key.Z.keyCode ->
-                                                ((event.key.keyCode - Key.A.keyCode + 1)
-                                                    .toChar()).toString()
-                                            event.key == Key.Enter ||
-                                                event.key == Key.NumPadEnter -> "\r"
-                                            event.key == Key.Backspace -> "\u007F"
-                                            event.key == Key.Tab -> "\t"
-                                            event.key == Key.Escape -> "\u001B"
-                                            event.key == Key.DirectionUp -> "\u001B[A"
-                                            event.key == Key.DirectionDown -> "\u001B[B"
-                                            event.key == Key.DirectionLeft -> "\u001B[D"
-                                            event.key == Key.DirectionRight -> "\u001B[C"
-                                            else -> null
-                                        }
-                                        if (bytes != null && session != null) {
-                                            session.sendRaw(bytes)
-                                            true
-                                        } else {
-                                            bytes != null
-                                        }
-                                    }
-                                },
-                            keyboardActions = KeyboardActions(
-                                // Soft keyboards whose Enter is an
-                                // action key rather than a committed
-                                // character: Done is the shell's
-                                // Enter, a bare carriage return.
-                                onDone = { sessionFor(activeTab)?.sendRaw("\r") }
-                            ),
-                            keyboardOptions = KeyboardOptions(
-                                capitalization = KeyboardCapitalization.None,
-                                autoCorrectEnabled = false,
-                                imeAction = ImeAction.Done
-                            ),
-                            decorationBox = { innerTextField ->
-                                Box {
-                                    if (fieldValue.text.isEmpty()) {
-                                        Text(
-                                            "tap and type: keystrokes go straight to the shell",
-                                            color = AgtColors.TextDim,
-                                            fontSize = 12.5.sp,
-                                            fontFamily = FontFamily.Monospace
-                                        )
-                                    }
-                                    innerTextField()
-                                }
+            Column(Modifier.fillMaxSize()) {
+                Box(Modifier.weight(1f)) {
+                    Column(
+                        Modifier
+                            .fillMaxSize()
+                            .verticalScroll(scrollState)
+                            .clickable {
+                                // Taps on the transcript itself
+                                // focus the input too (the box's own
+                                // clickable covers the rest of the
+                                // surface; a scrollable child can
+                                // claim the tap first).
+                                focusRequester.requestFocus()
+                                keyboardController?.show()
                             }
+                    ) {
+                        Text(
+                            rendered,
+                            color = AgtColors.TextPrimary,
+                            fontSize = 11.5.sp,
+                            fontFamily = FontFamily.Monospace
                         )
                     }
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 40.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // No drawn prompt here: the prompt belongs to
+                    // the shell and appears in the transcript
+                    // above, printed by bash itself on its pty. A
+                    // static "agt@host" label would be the app
+                    // pretending to be the shell. The field below
+                    // draws no text of its own either: it is a
+                    // capture surface for the keyboard, kept
+                    // empty, and the hint under it is app
+                    // chrome, not shell output.
+                    BasicTextField(
+                        value = fieldValue,
+                        onValueChange = { onFieldChange(it) },
+                        singleLine = true,
+                        textStyle = TextStyle(
+                            color = AgtColors.TextPrimary, fontSize = 12.5.sp,
+                            fontFamily = FontFamily.Monospace
+                        ),
+                        cursorBrush = SolidColor(AgtColors.Gold),
+                        modifier = Modifier
+                            .weight(1f)
+                            .focusRequester(focusRequester)
+                            .onPreviewKeyEvent { event ->
+                                // Hardware and external keyboards:
+                                // the keys a terminal lives on are
+                                // forwarded as their terminal bytes
+                                // and consumed, so they never also
+                                // land in the field as text.
+                                if (event.type != KeyEventType.KeyDown) {
+                                    false
+                                } else {
+                                    val session = sessionFor(activeTab)
+                                    val bytes: String? = when {
+                                        event.isCtrlPressed &&
+                                            event.key.keyCode in Key.A.keyCode..Key.Z.keyCode ->
+                                            ((event.key.keyCode - Key.A.keyCode + 1)
+                                                .toChar()).toString()
+                                        event.key == Key.Enter ||
+                                            event.key == Key.NumPadEnter -> "\r"
+                                        event.key == Key.Backspace -> "\u007F"
+                                        event.key == Key.Tab -> "\t"
+                                        event.key == Key.Escape -> "\u001B"
+                                        event.key == Key.DirectionUp -> "\u001B[A"
+                                        event.key == Key.DirectionDown -> "\u001B[B"
+                                        event.key == Key.DirectionLeft -> "\u001B[D"
+                                        event.key == Key.DirectionRight -> "\u001B[C"
+                                        else -> null
+                                    }
+                                    if (bytes != null && session != null) {
+                                        session.sendRaw(bytes)
+                                        true
+                                    } else {
+                                        bytes != null
+                                    }
+                                }
+                            },
+                        keyboardActions = KeyboardActions(
+                            // Soft keyboards whose Enter is an
+                            // action key rather than a committed
+                            // character: Done is the shell's
+                            // Enter, a bare carriage return.
+                            onDone = { sessionFor(activeTab)?.sendRaw("\r") }
+                        ),
+                        keyboardOptions = KeyboardOptions(
+                            capitalization = KeyboardCapitalization.None,
+                            autoCorrectEnabled = false,
+                            imeAction = ImeAction.Done
+                        ),
+                        decorationBox = { innerTextField ->
+                            Box {
+                                if (fieldValue.text.isEmpty()) {
+                                    Text(
+                                        "tap and type: keystrokes go straight to the shell",
+                                        color = AgtColors.TextDim,
+                                        fontSize = 12.5.sp,
+                                        fontFamily = FontFamily.Monospace
+                                    )
+                                }
+                                innerTextField()
+                            }
+                        }
+                    )
                 }
             }
         }

@@ -95,8 +95,8 @@ fun SettingsScreen(onBack: () -> Unit) {
             StatusRow("Device id", runtime.deviceId(), AgtColors.TextPrimary)
             StatusRow(
                 "Linux layer",
-                if (runtime.proot.isInstalled()) "Installed (${settings.rootfsVersion})" else "Sets up automatically on first start",
-                if (runtime.proot.isInstalled()) AgtColors.Emerald else AgtColors.Amber
+                if (runtime.linux.isInstalled()) "Installed (${settings.rootfsVersion})" else "Sets up automatically on first start",
+                if (runtime.linux.isInstalled()) AgtColors.Emerald else AgtColors.Amber
             )
             StatusRow("App version", BuildConfig.VERSION_NAME, AgtColors.TextPrimary)
         }

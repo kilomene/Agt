@@ -39,7 +39,10 @@ data class ProcessRecord(
     val pid: Long = 0,
     val startedAt: Long = System.currentTimeMillis(),
     val restarts: Int = 0,
-    val status: String = "running",
+    // Records written before the status was derived from uptime have
+    // no honest default to inherit: a record that does not say is
+    // starting, never running.
+    val status: String = "starting",
     val logPath: String = ""
 )
 

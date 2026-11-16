@@ -20,8 +20,8 @@ android {
         // app (Termux included) targets 28 for this reason.
         // compileSdk stays 34; only the target is pinned.
         targetSdk = 28
-        versionCode = 15
-        versionName = "1.6.7"
+        versionCode = 16
+        versionName = "1.6.8"
         // Client config injected at build time from CI secrets (GitHub
         // repo secrets SUPABASE_ANON_KEY and TUNNEL_TOKEN). Local builds
         // without the env vars build with empty values and the legs
@@ -59,7 +59,8 @@ android {
     packaging {
         jniLibs {
             // The app EXECUTES its jniLibs (libproot.so, libcloudflared.so)
-            // from the native library dir, so they must be extracted to
+            // from the native library dir, and loads libagtpty.so (the
+            // shell's PTY library) from there too, so they must be extracted to
             // real files at install time. Without legacy packaging AGP
             // stores them uncompressed inside the APK and File.exists()
             // on nativeLibraryDir is false on the phone, which shipped

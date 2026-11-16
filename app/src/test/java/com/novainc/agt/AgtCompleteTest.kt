@@ -6,7 +6,7 @@ import com.novainc.agt.agent.JobEngine
 import com.novainc.agt.deploy.DeploymentEngine
 import com.novainc.agt.deploy.Templates
 import androidx.compose.ui.graphics.Color
-import com.novainc.agt.linux.Proot
+import com.novainc.agt.linux.NativeLinux
 import com.novainc.agt.ui.renderTerminal
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -16,20 +16,23 @@ import org.junit.Test
 class AgtCompleteTest {
 
     @Test
-    fun prootCommandIsSandboxedAndBound() {
-        val cmd = Proot.buildProotCommand(
-            "/data/app/lib/libproot.so", "/data/data/com.novainc.agt/files/agt/linux/rootfs",
-            "python3 -m http.server 8080", "/root/deployments/abc",
-            listOf("/data/data/x" to "/root/deployments/abc")
+    fun bootstrapSymlinksParse() {
+        // The bootstrap zip carries its links as SYMLINKS.txt in
+        // the Termux format (target, arrow U+2190, path relative
+        // to the prefix); the extractor recreates them from this.
+        val links = NativeLinux.parseSymlinks(
+            "busybox←bin/ls\nbusybox←bin/cat\n\nlibncurses.so.6.4←lib/libncurses.so.6\n"
         )
-        assertEquals("/data/app/lib/libproot.so", cmd[0])
-        assertTrue(cmd.contains("-R"))
-        assertTrue(cmd.contains("-0"))
-        assertTrue(cmd.contains("/bin/bash"))
-        assertTrue(cmd.contains("python3 -m http.server 8080"))
-        assertTrue(cmd.contains("/data/data/x:/root/deployments/abc"))
-        // No host shell is ever involved: the guest command is one argument.
-        assertEquals(cmd.last(), "python3 -m http.server 8080")
+        assertEquals(3, links.size)
+        assertEquals("busybox" to "bin/ls", links[0])
+        assertEquals("busybox" to "bin/cat", links[1])
+        assertEquals("libncurses.so.6.4" to "lib/libncurses.so.6", links[2])
+    }
+
+    @Test
+    fun bootstrapSymlinksSkipMalformedLines() {
+        val links = NativeLinux.parseSymlinks("no arrow here\n←\n   \n")
+        assertTrue(links.isEmpty())
     }
 
     @Test

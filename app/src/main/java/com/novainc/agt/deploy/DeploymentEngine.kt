@@ -4,7 +4,6 @@ import android.content.Context
 import com.novainc.agt.core.AgtStore
 import com.novainc.agt.core.Deployment
 import com.novainc.agt.linux.ProcessSupervisor
-import com.novainc.agt.linux.Proot
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -28,7 +27,6 @@ import java.util.concurrent.TimeUnit
 class DeploymentEngine(
     private val context: Context,
     private val store: AgtStore,
-    private val proot: Proot,
     private val supervisor: ProcessSupervisor
 ) {
     fun createFromTemplate(

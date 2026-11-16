@@ -10,7 +10,7 @@ import com.novainc.agt.deploy.DeploymentEngine
 import com.novainc.agt.deploy.Templates
 import com.novainc.agt.legs.SupabaseLeg
 import com.novainc.agt.linux.ProcessSupervisor
-import com.novainc.agt.linux.Proot
+import com.novainc.agt.linux.NativeLinux
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -29,7 +29,7 @@ import java.util.UUID
 class JobEngine(
     private val store: AgtStore,
     private val supabase: SupabaseLeg,
-    private val proot: Proot,
+    private val linux: NativeLinux,
     private val supervisor: ProcessSupervisor,
     private val deployEngine: DeploymentEngine,
     private val identity: DeviceIdentity
@@ -162,7 +162,7 @@ class JobEngine(
             "command" -> {
                 val command = payload.get("command")?.asString ?: ""
                 val workdir = payload.get("workdir")?.asString ?: "/root"
-                val run = proot.runOneShot(command, workdir, emptyMap(), 120)
+                val run = linux.runOneShot(command, workdir, emptyMap(), 120)
                 JsonObject().apply {
                     addProperty("exit", run.exitCode)
                     addProperty("stdout", run.stdout.take(4000))
@@ -187,14 +187,27 @@ class JobEngine(
                 JsonObject().apply {
                     addProperty("deploymentId", deployment.id)
                     addProperty("name", deployment.name)
-                    addProperty("status", "running")
+                    // The stored status the supervisor derived, not
+                    // an assertion: a fresh process is starting
+                    // until it earns running by staying up.
+                    addProperty(
+                        "status",
+                        store.loadDeployments()
+                            .firstOrNull { it.id == deployment.id }?.status ?: "starting"
+                    )
                 }
             }
             "restart" -> {
                 val id = payload.get("deploymentId")?.asString ?: return fail("deploymentId missing")
                 val d = store.loadDeployments().firstOrNull { it.id == id } ?: return fail("no such deployment")
                 supervisor.restart(d)
-                JsonObject().apply { addProperty("status", "running") }
+                JsonObject().apply {
+                    addProperty(
+                        "status",
+                        store.loadDeployments()
+                            .firstOrNull { it.id == id }?.status ?: "starting"
+                    )
+                }
             }
             "stop" -> {
                 val id = payload.get("deploymentId")?.asString ?: return fail("deploymentId missing")

@@ -31,7 +31,7 @@ jobs:
         with:
           gradle-version: '8.7'
 
-      - name: Stage native binaries and rootfs
+      - name: Stage native binaries and the Linux bootstrap
         run: |
           set -euo pipefail
           mkdir -p app/src/main/jniLibs/arm64-v8a app/src/main/assets
@@ -40,8 +40,15 @@ jobs:
           echo "abe54a006acf9faf2d19ee9d953cb0d0804e92f59c5382a162e57b84d086f56f  native-binaries/cloudflared-arm64" | sha256sum -c -
           cp native-binaries/proot-aarch64 app/src/main/jniLibs/arm64-v8a/libproot.so
           cp native-binaries/cloudflared-arm64 app/src/main/jniLibs/arm64-v8a/libcloudflared.so
-          cat rootfs-parts/debian-bookworm-agt-arm64.tar.gz.part* > app/src/main/assets/debian-bookworm-agt-arm64.bundle
-          echo "39a1a3304250d3096c2f366e4265039f35ca9478d71511ee884252a9ae3758b8  app/src/main/assets/debian-bookworm-agt-arm64.bundle" | sha256sum -c -
+          # The native Linux layer: the PTY library the shell runs
+          # on, and the bootstrap zip (bash + busybox + ncurses,
+          # built for this app's own prefix; sources and build
+          # scripts in native-binaries/src). The Debian rootfs
+          # bundle is gone: Linux is native now, not a guest.
+          echo "06aabdf71b7fbcd49e4a858f78f0ccd5d2b7c02777132a9ab81f80b9c8258152  native-binaries/libagtpty.so" | sha256sum -c -
+          cp native-binaries/libagtpty.so app/src/main/jniLibs/arm64-v8a/libagtpty.so
+          echo "0a877564f356a1d65c0dda6f75415b90aad4d319f0452e3abeab3d2c35a39d78  native-bootstrap/bootstrap-aarch64.zip" | sha256sum -c -
+          cp native-bootstrap/bootstrap-aarch64.zip app/src/main/assets/bootstrap-aarch64.zip
           ls -la app/src/main/jniLibs/arm64-v8a/ app/src/main/assets/
 
       - name: Run unit tests and build the debug APK

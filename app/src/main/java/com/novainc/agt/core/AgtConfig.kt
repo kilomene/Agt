@@ -33,18 +33,17 @@ object AgtConfig {
     // token at the Identity Toolkit endpoint.
     const val FIREBASE_API_KEY = "AIzaSyDk9Ic4pbQglf0kyIBa_oLGmu5iHbnWFFI"
     const val TUNNEL_HOSTNAME = "termux.novamail.store"
-    // The rootfs ships inside the APK when the build bundles it. If it is
-    // not bundled, the app downloads it in 10 MB parts from the repo
-    // (raw.githubusercontent.com) and reassembles them, then verifies the
-    // sha256 below. A single-file release asset was tried first: GitHub's
-    // uploads host rejects this VM's credential, so parts are the working
-    // distribution path. The release rootfs-v1 exists on the repo but
-    // carries no asset yet for the same reason.
-    val ROOTFS_PART_URLS: List<String> = (0..9).map { i ->
-        "https://raw.githubusercontent.com/kilomene/Agt/main/rootfs-parts/" +
-            "debian-bookworm-agt-arm64.tar.gz.part%02d".format(i)
-    }
-    const val ROOTFS_SHA256 = "39a1a3304250d3096c2f366e4265039f35ca9478d71511ee884252a9ae3758b8"
-    const val ROOTFS_SIZE_BYTES = 101443235L
-    const val ROOTFS_VERSION = "bookworm-agt-v2"
+    // The Linux bootstrap ships inside the APK as a single asset:
+    // a zip of native bionic binaries cross-compiled for this app's
+    // own prefix (bash, busybox, libncurses; see NativeLinux and
+    // report section 16), staged into assets by the build from the
+    // repo's native-bootstrap directory and verified there against
+    // the sha256 below. It replaces the Debian rootfs bundle
+    // (101 MB, proot guest) entirely: the download the owner pays
+    // for shrank by roughly the rootfs's whole size. The installed
+    // bundle's version is recorded in the settings' rootfsVersion
+    // field, whose name predates the change.
+    const val BOOTSTRAP_ASSET = "bootstrap-aarch64.zip"
+    const val BOOTSTRAP_SHA256 = "0a877564f356a1d65c0dda6f75415b90aad4d319f0452e3abeab3d2c35a39d78"
+    const val BOOTSTRAP_VERSION = "agt-bootstrap-v1"
 }

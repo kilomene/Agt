@@ -8,8 +8,9 @@ import com.novainc.agt.deploy.DeploymentEngine
 import com.novainc.agt.legs.FirebaseLeg
 import com.novainc.agt.legs.SupabaseLeg
 import com.novainc.agt.legs.TunnelLeg
+import com.novainc.agt.linux.NativeLinux
 import com.novainc.agt.linux.ProcessSupervisor
-import com.novainc.agt.linux.Proot
+import com.novainc.agt.linux.ShellSession
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -32,14 +33,14 @@ import java.util.concurrent.ConcurrentHashMap
  */
 class AgtRuntime private constructor(private val context: Context) {
     val store = AgtStore(context.applicationContext)
-    val proot = Proot(context.applicationContext, store)
-    val supervisor = ProcessSupervisor(context.applicationContext, store, proot)
-    val deployEngine = DeploymentEngine(context.applicationContext, store, proot, supervisor)
+    val linux = NativeLinux(context.applicationContext, store)
+    val supervisor = ProcessSupervisor(context.applicationContext, store, linux)
+    val deployEngine = DeploymentEngine(context.applicationContext, store, supervisor)
     val supabase = SupabaseLeg(store)
     val tunnel = TunnelLeg(context.applicationContext)
     val firebase = FirebaseLeg(store)
     val identity = DeviceIdentity(context.applicationContext, store)
-    val jobEngine = JobEngine(store, supabase, proot, supervisor, deployEngine, identity)
+    val jobEngine = JobEngine(store, supabase, linux, supervisor, deployEngine, identity)
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var syncJob: Job? = null
@@ -47,31 +48,32 @@ class AgtRuntime private constructor(private val context: Context) {
     private var alertsWired = false
 
     /** Linux readiness, and it means exactly one thing: a real
-     * guest shell answered its echo probe through the winning
-     * start shape. It starts false and is set only by the
-     * self-test's verdict, never from file checks: the file-based
-     * reading this replaces reported ready through shipped builds
-     * whose bash could not start at all (the false-alive reading).
-     * Whether the tree is installed is a separate question, and
-     * proot.isInstalled() answers it where that is what is meant
-     * (the install flow). */
+     * native shell answered its echo probe. It starts false and is
+     * set only by the self-test's verdict, never from file checks:
+     * the file-based reading this replaces reported ready through
+     * shipped builds whose shell could not start at all (the
+     * false-alive reading). Whether the bootstrap is installed is
+     * a separate question, and linux.isInstalled() answers it
+     * where that is what is meant (the install flow). */
     private val _linuxReady = MutableStateFlow(false)
     val linuxReady: StateFlow<Boolean> = _linuxReady.asStateFlow()
 
-    /** The guest self-test verdict: whether a real guest shell
-     * answered its echo, proven once per service start and again
-     * after a fresh install completes. Never inferred from file
-     * existence: three shipped builds reported a ready tree whose
-     * bash could not start. */
+    /** The self-test verdict: whether a real shell answered its
+     * echo, proven once per service start and again after a fresh
+     * install completes. Never inferred from file existence:
+     * three shipped builds reported a ready tree whose bash could
+     * not start. */
     private val _linuxConsoleOk = MutableStateFlow(false)
     val linuxConsoleOk: StateFlow<Boolean> = _linuxConsoleOk.asStateFlow()
 
     private val _linuxDetail = MutableStateFlow("")
     val linuxDetail: StateFlow<String> = _linuxDetail.asStateFlow()
 
-    /** The v1.6.6 diagnostic ladder report: per-rung exit codes and
-     * output from diagnoseGuest(), plus content hashes of the guest
-     * loader chain. Rides telemetry as linuxLadder so a guest that
+    /** The native diagnostic report (NativeLinux.diagnose): the
+     * bootstrap version, content hashes of the binaries the
+     * shell's start depends on, and the probe's own words. Rides
+     * telemetry as linuxLadder, the field name kept from the
+     * guest era so existing readers keep working, so a shell that
      * cannot start explains itself from the phone. */
     private val _linuxLadder = MutableStateFlow("")
     val linuxLadder: StateFlow<String> = _linuxLadder.asStateFlow()
@@ -145,13 +147,13 @@ class AgtRuntime private constructor(private val context: Context) {
 
     /** First-run Linux install, with progress the UI can show. A
      * failed or interrupted install retries on its own after a
-     * minute: the promise is that Linux sets itself up, so a dead
-     * install never just sits there waiting for a human. */
+     * minute: the promise is that Linux is part of the app, so a
+     * dead install never just sits there waiting for a human. */
     fun installLinux() {
         if (_installing.value) return
         _installing.value = true
         scope.launch {
-            val result = proot.install { p, s ->
+            val result = linux.install { p, s ->
                 _installProgress.value = p
                 _installStatus.value = s
             }
@@ -159,43 +161,42 @@ class AgtRuntime private constructor(private val context: Context) {
                 _installStatus.value = "Install failed: ${e.message}"
             }
             _installing.value = false
-            // An installed tree is not a ready Linux: readiness is
-            // the self-test's verdict (a shell actually answered),
-            // so a finished install goes straight to the probe. A
-            // tree that did not install retries on its own.
-            if (proot.isInstalled()) {
+            // An installed bootstrap is not a ready Linux:
+            // readiness is the self-test's verdict (a shell
+            // actually answered), so a finished install goes
+            // straight to the probe. A bootstrap that did not
+            // install retries on its own.
+            if (linux.isInstalled()) {
                 runLinuxSelfTest()
             } else {
                 delay(60_000)
-                if (!proot.isInstalled()) installLinux()
+                if (!linux.isInstalled()) installLinux()
             }
         }
     }
 
-    /** Run the guest self-test in the background and cache its
+    /** Run the Linux self-test in the background and cache its
      * verdict for telemetry. Async on purpose: service start never
-     * waits on it, and a guest that cannot run reports itself
+     * waits on it, and a shell that cannot run reports itself
      * within seconds instead of being discovered by the owner. */
     private fun runLinuxSelfTest() {
         scope.launch {
-            if (!proot.isInstalled()) return@launch
+            if (!linux.isInstalled()) return@launch
             try {
-                val d = proot.diagnoseGuest()
+                val d = linux.diagnose()
                 _linuxConsoleOk.value = d.consoleOk
                 // Readiness is this same verdict: the probe
-                // answered, through the named start shape.
+                // answered. The native shell has no start shapes:
+                // it starts as a process of the app or the
+                // failure is printed in the open.
                 _linuxReady.value = d.consoleOk
                 _linuxLadder.value = d.report
-                _linuxDetail.value = if (d.consoleOk) {
-                    "guest shell answered AGT_LINUX_OK (start shape: ${d.shapeName})"
-                } else {
-                    d.baselineLine.takeLast(160)
-                }
+                _linuxDetail.value = d.detailLine.take(160)
                 // Startup is not finished until the shell itself
                 // is raised. Every road back to life (sticky
                 // restart, the watchdog chain, boot, the comeback
                 // alarm) funnels into startAll and therefore into
-                // this self-test, so a guest that answers its
+                // this self-test, so a shell that answers its
                 // probe raises its primary shell here, with no
                 // user action: the session takes its place in the
                 // registry under the Console tab's own key
@@ -213,7 +214,7 @@ class AgtRuntime private constructor(private val context: Context) {
             } catch (e: Exception) {
                 _linuxConsoleOk.value = false
                 _linuxReady.value = false
-                _linuxDetail.value = (e.message ?: "guest self-test failed").take(160)
+                _linuxDetail.value = (e.message ?: "Linux self-test failed").take(160)
             }
         }
     }
@@ -352,11 +353,6 @@ class AgtRuntime private constructor(private val context: Context) {
     /** Start everything the host needs: supervisor restore, legs, jobs. */
     fun startAll() {
         wireAlerts()
-        // Heal a rootfs extracted by an older build before anything
-        // consults isInstalled(): a real /lib directory in place of
-        // the merged-usr symlink leaves the guest loader unable to
-        // find any library, and every guest process dies at start.
-        try { proot.repairLayout() } catch (e: Exception) { }
         // Unique subdomains: deployments stored by older builds
         // carry no slug and would share the name-derived address
         // with any same-named deployment. Fill the slugs in before
@@ -367,12 +363,12 @@ class AgtRuntime private constructor(private val context: Context) {
         // No Settings entry exists and none is needed.
         tunnel.start(scope, AgtConfig.TUNNEL_TOKEN)
         // Linux is part of the app, not an optional extra the owner
-        // installs by hand: the rootfs ships inside the APK, so first
-        // start extracts it automatically in the background.
-        if (!proot.isInstalled() && !_installing.value) {
+        // installs by hand: the bootstrap ships inside the APK, so
+        // first start extracts it automatically in the background.
+        if (!linux.isInstalled() && !_installing.value) {
             installLinux()
         }
-        // Prove the guest console on every service start, in the
+        // Prove the console on every service start, in the
         // background: the verdict rides telemetry as linuxConsoleOk.
         runLinuxSelfTest()
         refreshFcmToken()
@@ -425,31 +421,41 @@ class AgtRuntime private constructor(private val context: Context) {
 
     /** Console shell sessions, owned here: by the runtime, which
      * the foreground service starts and stops, and never by any
-     * screen. A guest shell is a long-lived process, the way a
-     * Termux session is: it is created the first time a console
-     * tab asks for it and then it simply lives, at its prompt,
-     * across tab switches, screen exits, sync cycles and idle
-     * days. Opening the Console tab attaches the view to the
-     * session that is already running; leaving it detaches the
-     * view and nothing else. No screen lifecycle event, timeout
-     * or sync cycle starts, stops or restarts a shell; the
-     * session's own keeper is the only restart path, and it fires
-     * only if the shell process itself exits. The one legitimate
-     * end of a shell's life is the service's own teardown, in
-     * stopAll() below. */
-    private val shellSessions = ConcurrentHashMap<String, Proot.ShellSession>()
+     * screen. A shell is a long-lived process, the way a Termux
+     * session is: it is created the first time a console tab asks
+     * for it and then it simply lives, at its prompt, across tab
+     * switches, screen exits, sync cycles and idle days. Opening
+     * the Console tab attaches the view to the session that is
+     * already running; leaving it detaches the view and nothing
+     * else. No screen lifecycle event, timeout or sync cycle
+     * starts, stops or restarts a shell; the session's own keeper
+     * is the only restart path, and it fires only if the shell
+     * process itself exits. The one legitimate end of a shell's
+     * life is the service's own teardown, in stopAll() below. */
+    private val shellSessions = ConcurrentHashMap<String, ShellSession>()
     private val shellSessionsLock = Any()
 
     /** The living shell session for a console tab key, started on
-     * first ask and returned as-is on every later ask. */
+     * first ask and returned as-is on every later ask. The
+     * workdir/binds arguments are the console's proot-era calling
+     * shape, translated here: a deployment tab's bind named the
+     * host directory its guest session was mounted at, and that
+     * directory is simply the native session's working directory
+     * now; the host tab's "/root" is the home directory. */
     fun shellSession(
         key: String,
         workdir: String = "/root",
         binds: List<Pair<String, String>> = emptyList()
-    ): Proot.ShellSession {
+    ): ShellSession {
         shellSessions[key]?.let { return it }
         return synchronized(shellSessionsLock) {
-            shellSessions.getOrPut(key) { proot.startShell(workdir, binds) }
+            shellSessions.getOrPut(key) {
+                val dir = binds.firstOrNull()
+                    ?.let { java.io.File(it.first) }
+                    ?.takeIf { it.isDirectory }
+                    ?: linux.resolveWorkdir(workdir)
+                linux.startShell(dir)
+            }
         }
     }
 

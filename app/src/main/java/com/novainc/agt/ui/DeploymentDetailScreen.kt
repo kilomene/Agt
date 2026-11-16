@@ -96,9 +96,22 @@ fun DeploymentDetailScreen(deploymentId: String, onBack: () -> Unit, onOpenConso
                 )
             }
             if (d != null) {
+                // The pill speaks the stored status as it is: the
+                // supervisor derives it from the process's actual
+                // uptime, so a crash-looping deployment reads
+                // CRASH-LOOPING here, never RUNNING.
                 TintedPill(
-                    if (d.status == "running") "RUNNING" else "STOPPED",
-                    if (d.status == "running") AgtColors.Emerald else AgtColors.Danger,
+                    when (d.status) {
+                        "running" -> "RUNNING"
+                        "crash-looping" -> "CRASH-LOOPING"
+                        "starting" -> "STARTING"
+                        else -> "STOPPED"
+                    },
+                    when (d.status) {
+                        "running" -> AgtColors.Emerald
+                        "starting" -> AgtColors.Amber
+                        else -> AgtColors.Danger
+                    },
                     pulsing = d.status == "running"
                 )
             }
@@ -109,6 +122,10 @@ fun DeploymentDetailScreen(deploymentId: String, onBack: () -> Unit, onOpenConso
             return@Column
         }
         val running = d.status == "running"
+        // Under the supervisor's hand (a process exists or is being
+        // raised): the log stream is live and Stop, not Start, is the
+        // action that applies.
+        val active = running || d.status == "starting" || d.status == "crash-looping"
         val proc = process
         AgtCard {
             InfoRow("Subdomain", subdomainOf(d), AgtColors.Gold)
@@ -121,7 +138,12 @@ fun DeploymentDetailScreen(deploymentId: String, onBack: () -> Unit, onOpenConso
             InfoDivider()
             InfoRow(
                 "Uptime",
-                (if (running && proc != null) formatUptimeShort(nowMs - proc.startedAt) else "stopped") +
+                (when {
+                    running && proc != null -> formatUptimeShort(nowMs - proc.startedAt)
+                    d.status == "crash-looping" -> "crash-looping"
+                    d.status == "starting" -> "starting"
+                    else -> "stopped"
+                }) +
                     " · restarts ${proc?.restarts ?: 0}",
                 AgtColors.TextPrimary
             )
@@ -135,12 +157,12 @@ fun DeploymentDetailScreen(deploymentId: String, onBack: () -> Unit, onOpenConso
                     modifier = Modifier
                         .size(7.dp)
                         .clip(CircleShape)
-                        .background(if (running) AgtColors.Emerald else AgtColors.TextDim)
+                        .background(if (active) AgtColors.Emerald else AgtColors.TextDim)
                 )
                 Spacer(Modifier.width(6.dp))
                 Text(
-                    if (running) "STREAMING" else "STOPPED",
-                    color = if (running) AgtColors.Emerald else AgtColors.TextDim,
+                    if (active) "STREAMING" else "STOPPED",
+                    color = if (active) AgtColors.Emerald else AgtColors.TextDim,
                     fontSize = 11.sp, fontWeight = FontWeight.Bold
                 )
             }
@@ -220,7 +242,7 @@ fun DeploymentDetailScreen(deploymentId: String, onBack: () -> Unit, onOpenConso
         }
         Spacer(Modifier.height(10.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            if (running) {
+            if (active) {
                 ActionButton(IconKind.Square, "Stop deployment", Modifier.weight(1f)) {
                     runtime.supervisor.stop(d.id)
                 }
