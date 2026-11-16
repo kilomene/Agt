@@ -113,6 +113,7 @@ class FirebaseLeg(private val store: AgtStore) {
         startTelemetry = telemetry
         stop()
         loop = scope.launch(Dispatchers.IO) {
+            var cycle = 0
             while (isActive) {
                 val custom = store.loadSettings().firebaseToken
                 if (custom != lastCustomToken) {
@@ -131,9 +132,17 @@ class FirebaseLeg(private val store: AgtStore) {
                 }
                 try {
                     val token = authToken(custom)
-                    val t0 = System.currentTimeMillis()
-                    writePresence(deviceId, token, telemetry())
-                    _latencyMs.value = System.currentTimeMillis() - t0
+                    // Presence is written on a slow cadence (about
+                    // every 10s); the doorbell and alert nodes are
+                    // checked every cycle (about every 2s), so a ring
+                    // wakes the job engine near-instantly instead of
+                    // waiting out the presence interval.
+                    if (cycle % 5 == 0) {
+                        val t0 = System.currentTimeMillis()
+                        writePresence(deviceId, token, telemetry())
+                        _latencyMs.value = System.currentTimeMillis() - t0
+                    }
+                    cycle++
                     checkWake(deviceId, token)
                     checkAlert(deviceId, token)
                     _state.value = State.CONNECTED
@@ -142,7 +151,7 @@ class FirebaseLeg(private val store: AgtStore) {
                     _state.value = State.ERROR
                     _detail.value = e.message ?: "Firebase error"
                 }
-                delay(10_000)
+                delay(2_000)
             }
         }
     }

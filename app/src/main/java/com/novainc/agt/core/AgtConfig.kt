@@ -44,6 +44,6 @@ object AgtConfig {
     // bundle's version is recorded in the settings' rootfsVersion
     // field, whose name predates the change.
     const val BOOTSTRAP_ASSET = "bootstrap-aarch64.zip"
-    const val BOOTSTRAP_SHA256 = "0a877564f356a1d65c0dda6f75415b90aad4d319f0452e3abeab3d2c35a39d78"
+    const val BOOTSTRAP_SHA256 = "bb80efa0bffb968bbf23cdfc832dcdd5d434848c910c883b456f913b4e2e20ee"
     const val BOOTSTRAP_VERSION = "agt-bootstrap-v1"
 }
