@@ -154,7 +154,7 @@ class AgtRuntime private constructor(private val context: Context) {
         _installing.value = true
         scope.launch {
             val result = linux.install { p, s ->
-                _installProgress.value = p
+                _installProgress.value = p / 100f
                 _installStatus.value = s
             }
             result.onFailure { e ->
