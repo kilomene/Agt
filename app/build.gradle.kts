@@ -12,9 +12,16 @@ android {
     defaultConfig {
         applicationId = "com.novainc.agt"
         minSdk = 26
-        targetSdk = 34
-        versionCode = 11
-        versionName = "1.6.3"
+        // targetSdk stays at 28 on purpose: Android's SELinux policy
+        // for apps targeting 29+ denies execve of files in the app
+        // data dir, which is exactly where the PRoot guest tree
+        // lives, so at 34 the guest's bash could never start
+        // ("Permission denied" on the phone, v1.6.3). Every PRoot
+        // app (Termux included) targets 28 for this reason.
+        // compileSdk stays 34; only the target is pinned.
+        targetSdk = 28
+        versionCode = 12
+        versionName = "1.6.4"
         // Client config injected at build time from CI secrets (GitHub
         // repo secrets SUPABASE_ANON_KEY and TUNNEL_TOKEN). Local builds
         // without the env vars build with empty values and the legs

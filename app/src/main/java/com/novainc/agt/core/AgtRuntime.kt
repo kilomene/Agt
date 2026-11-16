@@ -48,6 +48,17 @@ class AgtRuntime private constructor(private val context: Context) {
     private val _linuxReady = MutableStateFlow(proot.isInstalled())
     val linuxReady: StateFlow<Boolean> = _linuxReady.asStateFlow()
 
+    /** The guest self-test verdict: whether a real guest shell
+     * answered its echo, proven once per service start and again
+     * after a fresh install completes. Never inferred from file
+     * existence: three shipped builds reported a ready tree whose
+     * bash could not start. */
+    private val _linuxConsoleOk = MutableStateFlow(false)
+    val linuxConsoleOk: StateFlow<Boolean> = _linuxConsoleOk.asStateFlow()
+
+    private val _linuxDetail = MutableStateFlow("")
+    val linuxDetail: StateFlow<String> = _linuxDetail.asStateFlow()
+
     private val _installProgress = MutableStateFlow(0f)
     val installProgress: StateFlow<Float> = _installProgress.asStateFlow()
 
@@ -96,10 +107,13 @@ class AgtRuntime private constructor(private val context: Context) {
             addProperty("uptimeSec", (t?.deviceUptimeMs ?: 0L) / 1000)
             addProperty("fcmToken", store.loadSettings().fcmToken)
             addProperty("linuxReady", proot.isInstalled())
+            addProperty("linuxConsoleOk", _linuxConsoleOk.value)
+            addProperty("linuxDetail", _linuxDetail.value.take(160))
             addProperty("appVersion", com.novainc.agt.BuildConfig.VERSION_NAME)
             addProperty("firebaseKeySet", firebase.hasUsableKey())
             addProperty("tunnelState", tunnel.state.value.name)
             addProperty("tunnelDetail", tunnel.detail.value.take(160))
+            addProperty("tunnelLog", tunnel.recentOutput().joinToString("\n").takeLast(3500))
             addProperty("syncError", _syncError.value ?: "")
             addProperty("installStatus", _installStatus.value.take(120))
             addProperty("deployments", store.loadDeployments().size)
@@ -124,9 +138,33 @@ class AgtRuntime private constructor(private val context: Context) {
             }
             _linuxReady.value = proot.isInstalled()
             _installing.value = false
+            if (_linuxReady.value) runLinuxSelfTest()
             if (!_linuxReady.value) {
                 delay(60_000)
                 if (!proot.isInstalled()) installLinux()
+            }
+        }
+    }
+
+    /** Run the guest self-test in the background and cache its
+     * verdict for telemetry. Async on purpose: service start never
+     * waits on it, and a guest that cannot run reports itself
+     * within seconds instead of being discovered by the owner. */
+    private fun runLinuxSelfTest() {
+        scope.launch {
+            if (!proot.isInstalled()) return@launch
+            try {
+                val r = proot.selfTest()
+                val ok = r.exitCode == 0 && r.stdout.contains("AGT_LINUX_OK")
+                _linuxConsoleOk.value = ok
+                _linuxDetail.value = if (ok) {
+                    "guest shell answered AGT_LINUX_OK"
+                } else {
+                    (r.stderr.ifBlank { r.stdout }).trim().take(160)
+                }
+            } catch (e: Exception) {
+                _linuxConsoleOk.value = false
+                _linuxDetail.value = (e.message ?: "guest self-test failed").take(160)
             }
         }
     }
@@ -241,6 +279,9 @@ class AgtRuntime private constructor(private val context: Context) {
         if (!proot.isInstalled() && !_installing.value) {
             installLinux()
         }
+        // Prove the guest console on every service start, in the
+        // background: the verdict rides telemetry as linuxConsoleOk.
+        runLinuxSelfTest()
         refreshFcmToken()
         // A fresh Firebase key applies the instant its job lands:
         // JobEngine pokes the leg, the leg reconnects with the new

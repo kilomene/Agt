@@ -62,8 +62,32 @@ class Proot(private val context: Context, private val store: AgtStore) {
         if (File(rootfsDir, "usr/bin/bash").length() < 100_000) return false
         if (!File(rootfsDir, "usr/bin/node").exists()) return false
         val loader = File(rootfsDir, "lib/ld-linux-aarch64.so.1")
-        return loader.exists() && loader.length() > 100_000
+        if (!(loader.exists() && loader.length() > 100_000)) return false
+        // The interpreters must also carry their execute bits: the
+        // old extractor kept only a coarse setExecutable flag, and a
+        // tree whose files merely exist can still refuse every
+        // exec. X_OK is checked on the resolved targets, the same
+        // files the guest will actually run.
+        return canExecute(File(rootfsDir, "usr/bin/bash")) &&
+            canExecute(File(rootfsDir, "usr/bin/python3")) &&
+            canExecute(File(rootfsDir, "usr/bin/node"))
     }
+
+    /** True when the file (symlinks followed) is executable by us. */
+    private fun canExecute(file: File): Boolean {
+        return try {
+            android.system.Os.access(file.path, android.system.OsConstants.X_OK)
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /** Prove the guest actually runs: the one check that cannot
+     * lie. Existence, sizes and permission bits all said "ready"
+     * through shipped builds whose bash could not start at all;
+     * an answered echo can only come from a working guest. */
+    fun selfTest(timeoutSec: Long = 30): RunResult =
+        runOneShot("echo AGT_LINUX_OK", timeoutSec = timeoutSec)
 
     /**
      * First-run install. Downloads the rootfs (about 100 MB, one time),
@@ -264,12 +288,26 @@ class Proot(private val context: Context, private val store: AgtStore) {
                             FileOutputStream(canonical).use { out ->
                                 tar.copyTo(out)
                             }
-                            if (entry.mode and 0x49 != 0) canonical.setExecutable(true, false)
+                            applyTarMode(canonical, entry.mode)
                         }
                     }
                     entry = tar.nextEntry
                 }
             }
+        }
+    }
+
+    /** Apply the tar entry's permission bits exactly as recorded.
+     * The old behaviour (setExecutable when any exec bit was set)
+     * kept the exec flag but flattened everything else, and a file
+     * that lands without the mode the tree ships can be refused by
+     * execve even when it exists. Falls back to the coarse flag
+     * when chmod itself is refused. */
+    private fun applyTarMode(file: File, mode: Int) {
+        try {
+            android.system.Os.chmod(file.path, mode and 0x1FF)
+        } catch (e: Exception) {
+            if (mode and 0x49 != 0) file.setExecutable(true, false)
         }
     }
 
@@ -312,9 +350,15 @@ class Proot(private val context: Context, private val store: AgtStore) {
         workdir: String = "/root",
         env: Map<String, String> = emptyMap(),
         binds: List<Pair<String, String>> = emptyList()
-    ): List<String> = buildProotCommand(
-        prootBin.absolutePath, rootfsDir.absolutePath, guestCommand, workdir, binds
-    )
+    ): List<String> {
+        // PROOT_TMP_DIR must exist before PRoot starts; a missing
+        // scratch dir was one of the field console errors, and the
+        // dir is never deleted once created.
+        tmpDir.mkdirs()
+        return buildProotCommand(
+            prootBin.absolutePath, rootfsDir.absolutePath, guestCommand, workdir, binds
+        )
+    }
 
     companion object {
         /** Pure command builder, unit-testable without Android. */
