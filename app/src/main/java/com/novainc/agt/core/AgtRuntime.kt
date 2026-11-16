@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * The process-wide runtime: every component the app owns, built once and
@@ -45,7 +46,16 @@ class AgtRuntime private constructor(private val context: Context) {
     private var hostId: String? = null
     private var alertsWired = false
 
-    private val _linuxReady = MutableStateFlow(proot.isInstalled())
+    /** Linux readiness, and it means exactly one thing: a real
+     * guest shell answered its echo probe through the winning
+     * start shape. It starts false and is set only by the
+     * self-test's verdict, never from file checks: the file-based
+     * reading this replaces reported ready through shipped builds
+     * whose bash could not start at all (the false-alive reading).
+     * Whether the tree is installed is a separate question, and
+     * proot.isInstalled() answers it where that is what is meant
+     * (the install flow). */
+    private val _linuxReady = MutableStateFlow(false)
     val linuxReady: StateFlow<Boolean> = _linuxReady.asStateFlow()
 
     /** The guest self-test verdict: whether a real guest shell
@@ -87,6 +97,10 @@ class AgtRuntime private constructor(private val context: Context) {
 
     private var tunnelDownAlerted = false
 
+    /** Per-deployment log upload offsets (chars already shipped to
+     * Supabase), in memory only. See uploadNewLogLines. */
+    private val logUploadOffsets = mutableMapOf<String, Int>()
+
     /** Ensure a device id exists; the id is stable per phone, forever. */
     fun deviceId(): String {
         val settings = store.loadSettings()
@@ -113,7 +127,7 @@ class AgtRuntime private constructor(private val context: Context) {
             addProperty("memoryAvailGb", t?.memoryAvailGb)
             addProperty("uptimeSec", (t?.deviceUptimeMs ?: 0L) / 1000)
             addProperty("fcmToken", store.loadSettings().fcmToken)
-            addProperty("linuxReady", proot.isInstalled())
+            addProperty("linuxReady", _linuxReady.value)
             addProperty("linuxConsoleOk", _linuxConsoleOk.value)
             addProperty("linuxDetail", _linuxDetail.value.take(160))
             addProperty("linuxLadder", _linuxLadder.value.take(1800))
@@ -144,10 +158,14 @@ class AgtRuntime private constructor(private val context: Context) {
             result.onFailure { e ->
                 _installStatus.value = "Install failed: ${e.message}"
             }
-            _linuxReady.value = proot.isInstalled()
             _installing.value = false
-            if (_linuxReady.value) runLinuxSelfTest()
-            if (!_linuxReady.value) {
+            // An installed tree is not a ready Linux: readiness is
+            // the self-test's verdict (a shell actually answered),
+            // so a finished install goes straight to the probe. A
+            // tree that did not install retries on its own.
+            if (proot.isInstalled()) {
+                runLinuxSelfTest()
+            } else {
                 delay(60_000)
                 if (!proot.isInstalled()) installLinux()
             }
@@ -164,14 +182,37 @@ class AgtRuntime private constructor(private val context: Context) {
             try {
                 val d = proot.diagnoseGuest()
                 _linuxConsoleOk.value = d.consoleOk
+                // Readiness is this same verdict: the probe
+                // answered, through the named start shape.
+                _linuxReady.value = d.consoleOk
                 _linuxLadder.value = d.report
                 _linuxDetail.value = if (d.consoleOk) {
-                    "guest shell answered AGT_LINUX_OK"
+                    "guest shell answered AGT_LINUX_OK (start shape: ${d.shapeName})"
                 } else {
                     d.baselineLine.takeLast(160)
                 }
+                // Startup is not finished until the shell itself
+                // is raised. Every road back to life (sticky
+                // restart, the watchdog chain, boot, the comeback
+                // alarm) funnels into startAll and therefore into
+                // this self-test, so a guest that answers its
+                // probe raises its primary shell here, with no
+                // user action: the session takes its place in the
+                // registry under the Console tab's own key
+                // (host-0) and simply lives there, owned by this
+                // runtime. The raise is gated on the service
+                // running, because the shell's keeper lives and
+                // dies with the foreground service: a shell is
+                // never raised into a runtime whose service is
+                // down (a settings-screen install retry can reach
+                // this self-test with the service stopped, and
+                // there the probe verdict is all that runs).
+                if (d.consoleOk && AgtService.running.value) {
+                    try { shellSession("host-0", "/root") } catch (e: Exception) { }
+                }
             } catch (e: Exception) {
                 _linuxConsoleOk.value = false
+                _linuxReady.value = false
                 _linuxDetail.value = (e.message ?: "guest self-test failed").take(160)
             }
         }
@@ -249,6 +290,7 @@ class AgtRuntime private constructor(private val context: Context) {
             val deployments = store.loadDeployments()
             for (d in deployments) {
                 try { supabase.upsertDeployment(hid, d) } catch (e: Exception) { }
+                uploadNewLogLines(d.id)
             }
             _lastSyncOkMs.value = System.currentTimeMillis()
             _syncError.value = null
@@ -258,6 +300,39 @@ class AgtRuntime private constructor(private val context: Context) {
             // retry on its normal cadence.
             _syncError.value = (e.message ?: e.javaClass.simpleName).take(180)
             throw e
+        }
+    }
+
+    /** Ship the deployment log lines that are new since the last
+     * sync to Supabase, so uploadLogs is a live path and the
+     * deployment_logs table is actually fed. The offset advances
+     * only after a successful upload, so a failed cycle retries the
+     * same lines instead of losing them. A first sync ships only
+     * the recent tail, never the whole log. A log failure never
+     * fails the sync cycle itself. */
+    private suspend fun uploadNewLogLines(deploymentId: String) {
+        try {
+            val text = supervisor.readLog(deploymentId)
+            val from = logUploadOffsets[deploymentId] ?: 0
+            if (text.length < from) {
+                logUploadOffsets[deploymentId] = 0
+                return
+            }
+            if (text.length == from) return
+            val segment = if (from == 0 && text.length > 4000) {
+                text.takeLast(4000)
+            } else {
+                text.substring(from)
+            }
+            val lines = segment.lines().filter { it.isNotEmpty() }
+            if (lines.isEmpty()) {
+                logUploadOffsets[deploymentId] = text.length
+                return
+            }
+            supabase.uploadLogs(deploymentId, lines)
+            logUploadOffsets[deploymentId] = text.length
+        } catch (e: Exception) {
+            // Offset untouched: the same lines retry next cycle.
         }
     }
 
@@ -348,12 +423,48 @@ class AgtRuntime private constructor(private val context: Context) {
         jobEngine.requestPoll()
     }
 
+    /** Console shell sessions, owned here: by the runtime, which
+     * the foreground service starts and stops, and never by any
+     * screen. A guest shell is a long-lived process, the way a
+     * Termux session is: it is created the first time a console
+     * tab asks for it and then it simply lives, at its prompt,
+     * across tab switches, screen exits, sync cycles and idle
+     * days. Opening the Console tab attaches the view to the
+     * session that is already running; leaving it detaches the
+     * view and nothing else. No screen lifecycle event, timeout
+     * or sync cycle starts, stops or restarts a shell; the
+     * session's own keeper is the only restart path, and it fires
+     * only if the shell process itself exits. The one legitimate
+     * end of a shell's life is the service's own teardown, in
+     * stopAll() below. */
+    private val shellSessions = ConcurrentHashMap<String, Proot.ShellSession>()
+    private val shellSessionsLock = Any()
+
+    /** The living shell session for a console tab key, started on
+     * first ask and returned as-is on every later ask. */
+    fun shellSession(
+        key: String,
+        workdir: String = "/root",
+        binds: List<Pair<String, String>> = emptyList()
+    ): Proot.ShellSession {
+        shellSessions[key]?.let { return it }
+        return synchronized(shellSessionsLock) {
+            shellSessions.getOrPut(key) { proot.startShell(workdir, binds) }
+        }
+    }
+
     fun stopAll() {
         syncJob?.cancel()
         jobEngine.stop()
         firebase.stop()
         tunnel.stop()
         supervisor.stopAll()
+        // The shells end with the service that owns them, and only
+        // there: this is the foreground service's onDestroy path.
+        synchronized(shellSessionsLock) {
+            shellSessions.values.forEach { it.close() }
+            shellSessions.clear()
+        }
     }
 
     fun destroy() {

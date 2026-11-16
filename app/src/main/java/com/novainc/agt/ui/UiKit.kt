@@ -125,16 +125,6 @@ fun TintedPill(text: String, color: Color, pulsing: Boolean = false) {
 }
 
 @Composable
-fun GoldButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true) {
-    Button(
-        onClick = onClick,
-        colors = ButtonDefaults.buttonColors(containerColor = AgtColors.Gold, contentColor = Color.Black),
-        modifier = modifier,
-        enabled = enabled
-    ) { Text(text, fontWeight = FontWeight.Bold) }
-}
-
-@Composable
 fun GhostButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
     OutlinedButton(onClick = onClick, modifier = modifier) {
         Text(text, color = AgtColors.GoldSoft)

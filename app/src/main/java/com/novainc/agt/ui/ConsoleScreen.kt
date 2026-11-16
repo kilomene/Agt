@@ -14,17 +14,15 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -34,12 +32,20 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.novainc.agt.core.AgtRuntime
@@ -47,30 +53,66 @@ import com.novainc.agt.linux.Proot
 import kotlinx.coroutines.delay
 
 /**
- * The Linux console, as designed: real shell sessions inside the
- * Debian layer. One session for the host plus one per deployment
- * (started in the deployment's own directory, with its files bound
- * in), and a working key bar: ctrl, tab, esc, paste, and an extended
- * keys row with arrows. Nothing here is a mock: every key goes to a
- * real bash under PRoot.
+ * The Linux console, and it is a terminal: each tab is a real shell
+ * session inside the Debian layer, running on a genuine
+ * pseudo-terminal (see Proot.startShell), so the shell echoes
+ * typing itself, prints its own prompt, streams output live, and
+ * takes control keys and interactive programs the way Termux does.
+ * One session for the host plus one per deployment (started in the
+ * deployment's own directory, with its files bound in), and a
+ * working key bar: ctrl, tab, esc, paste, and an extended keys row
+ * with arrows. Every session is kept by a keeper in the app: if
+ * its shell ever exits, a fresh one starts immediately and the
+ * tab continues on it, so a tab never presents a dead shell.
+ * The sessions themselves are owned by the runtime (and so by
+ * the foreground service), never by this screen: this screen
+ * only attaches its view to the living shells and detaches when
+ * it goes away. Opening, closing or leaving this tab starts,
+ * stops and restarts nothing. Readiness here is the runtime's
+ * answer-based verdict (a shell actually answered its probe),
+ * never a file check.
+ *
+ * Input is keystroke-true, the way Termux bridges an editable
+ * field to a terminal: the text field is a capture surface, not
+ * a buffer. It is kept empty; every change the keyboard commits
+ * is diffed and forwarded to the shell's terminal stream at
+ * once (inserted characters as themselves, deletions as DEL),
+ * hardware key events (Enter, Backspace, Tab, Escape, arrows,
+ * Ctrl combinations) are forwarded as their terminal bytes, and
+ * the field then resets to empty. Autocorrect and capitalization
+ * are off so the keyboard commits characters instead of composing
+ * words. Nothing the user types is ever displayed from the field:
+ * what the screen shows is only the transcript the shell itself
+ * produced through its pty, echo included. There is no Run
+ * button and no send-a-line path; the line-buffered field this
+ * replaces (type locally, tap Run, hope the shell was alive) is
+ * designed out. The transcript is rendered through
+ * [renderTerminal]: SGR colours interpreted, carriage-return
+ * and backspace line editing resolved, every other escape
+ * sequence stripped, so coloured output shows as colour and no
+ * escape garbage reaches the screen.
  */
 @Composable
 fun ConsoleScreen() {
     val context = LocalContext.current
     val runtime = remember { AgtRuntime.get(context) }
     val clipboard = LocalClipboardManager.current
-    val linuxReady = runtime.proot.isInstalled()
+    val linuxReady by runtime.linuxReady.collectAsState()
     val deployments = remember { runtime.store.loadDeployments() }
 
     var extraHostSessions by remember { mutableStateOf(0) }
     val tabCount = 1 + deployments.size + extraHostSessions
     var activeTab by remember { mutableStateOf(0) }
-    val sessions = remember { mutableMapOf<Int, Proot.ShellSession?>() }
     var output by remember { mutableStateOf("") }
-    var input by remember { mutableStateOf("") }
+    // The input field's value, held empty by design: it exists
+    // only to receive the keyboard's committed changes, each of
+    // which is forwarded to the shell and cleared (see
+    // onFieldChange). It is never a buffer and never displayed
+    // as shell output.
+    var fieldValue by remember { mutableStateOf(TextFieldValue("")) }
     var ctrlArmed by remember { mutableStateOf(false) }
     var keysOpen by remember { mutableStateOf(false) }
-    val listState = rememberLazyListState()
+    val scrollState = rememberScrollState()
 
     fun tabLabel(i: Int): String = when {
         i == 0 -> "host"
@@ -78,63 +120,126 @@ fun ConsoleScreen() {
         else -> "host ${i - deployments.size + 1}"
     }
 
-    fun createSession(i: Int): Proot.ShellSession? {
+    /** The living shell behind a tab, looked up in the runtime's
+     * registry: this screen attaches to it and never owns it, so
+     * this lookup creates the shell only the very first time any
+     * tab asks, and afterwards always returns the same living
+     * session. Keys: host tabs by position, deployment tabs by
+     * deployment id, so a deployment tab reattaches to its own
+     * shell even if the deployment list reorders. The bind's guest
+     * path is the deployment's effective workdir (the old screen
+     * code bound the raw stored workdir, which is empty for
+     * deployments that never set one and produced a malformed
+     * bind argument; the supervisor's own launches already used
+     * the effective value). */
+    fun sessionFor(i: Int): Proot.ShellSession? {
         if (!linuxReady) return null
-        val s = try {
+        return try {
             when {
-                i == 0 || i > deployments.size -> runtime.proot.startShell("/root")
+                i == 0 || i > deployments.size ->
+                    runtime.shellSession("host-$i", "/root")
                 else -> {
                     val d = deployments[i - 1]
                     val hostDir = runtime.store.deploymentDir(d.id)
-                    runtime.proot.startShell(
-                        d.workdir.ifEmpty { "/root" },
-                        binds = listOf(hostDir.absolutePath to d.workdir)
+                    val workdir = d.workdir.ifEmpty { "/root" }
+                    runtime.shellSession(
+                        "dep-${d.id}",
+                        workdir,
+                        binds = listOf(hostDir.absolutePath to workdir)
                     )
                 }
             }
         } catch (e: Exception) {
             null
         }
-        sessions[i] = s
-        return s
     }
 
-    fun sessionFor(i: Int): Proot.ShellSession? {
-        if (!linuxReady) return null
-        if (sessions.containsKey(i)) return sessions[i]
-        return createSession(i)
+    /** The control byte for a character typed while the ctrl key
+     * is armed: the classic terminal mapping, letters to 1..26
+     * and the punctuation controls around them. Null when the
+     * character has no control form, in which case it is sent
+     * as itself. */
+    fun controlCodeFor(c: Char): Char? = when (c) {
+        in 'A'..'Z' -> (c - 'A' + 1).toChar()
+        in 'a'..'z' -> (c - 'a' + 1).toChar()
+        '@' -> '\u0000'
+        '[' -> '\u001B'
+        '\\' -> '\u001C'
+        ']' -> '\u001D'
+        '^' -> '\u001E'
+        '_' -> '\u001F'
+        '?' -> '\u007F'
+        else -> null
     }
 
-    /** Send a line to a tab's shell, restarting the shell first
-     * when it has exited. A dead session's transcript says it
-     * exited; the next command the owner sends starts a fresh
-     * shell instead of vanishing into a dead pipe (the filmed
-     * behaviour: typing and Run disappeared into a blank screen). */
-    fun sendLine(i: Int, line: String) {
-        var s = sessionFor(i)
-        if (s != null && !s.alive) {
-            s.close()
-            sessions.remove(i)
-            s = createSession(i)
-            s?.note("[agt] new shell started\n")
+    /** Forward text the keyboard committed to the active tab's
+     * shell, at once and as-is. With ctrl armed, the first
+     * character goes as its control byte instead (the key bar's
+     * ctrl is a one-shot modifier, the way Termux's is) and the
+     * rest follow raw. Restarting a dead shell mid-write is the
+     * keeper's and the session's business, not the sender's:
+     * writeRaw retries once against the fresh shell. */
+    fun forwardText(text: String) {
+        if (text.isEmpty()) return
+        val session = sessionFor(activeTab) ?: return
+        if (ctrlArmed) {
+            val code = controlCodeFor(text[0])
+            if (code != null) {
+                session.sendRaw(code.toString())
+                ctrlArmed = false
+                if (text.length > 1) session.sendRaw(text.substring(1))
+                return
+            }
+            ctrlArmed = false
         }
-        s?.send(line)
+        session.sendRaw(text)
     }
 
-    DisposableEffect(Unit) {
-        onDispose { sessions.values.forEach { it?.close() } }
+    /** The field-to-terminal bridge. The field is kept empty, so
+     * a change is either an insertion (characters the keyboard
+     * committed: forward them) or a deletion against text the
+     * field no longer holds (a backspace over already-forwarded
+     * characters: forward DEL once per character, which is what
+     * a terminal's backspace key sends). Either way the field
+     * resets to empty and the shell's own echo, arriving through
+     * the transcript, is the only thing ever displayed. */
+    fun onFieldChange(new: TextFieldValue) {
+        val oldText = fieldValue.text
+        val newText = new.text
+        if (newText != oldText) {
+            var prefix = 0
+            while (prefix < oldText.length && prefix < newText.length &&
+                oldText[prefix] == newText[prefix]
+            ) prefix++
+            var suffix = 0
+            while (suffix < oldText.length - prefix && suffix < newText.length - prefix &&
+                oldText[oldText.length - 1 - suffix] == newText[newText.length - 1 - suffix]
+            ) suffix++
+            val deleted = oldText.length - prefix - suffix
+            if (deleted > 0) {
+                sessionFor(activeTab)?.sendRaw("\u007F".repeat(deleted))
+            }
+            val inserted = newText.substring(prefix, newText.length - suffix)
+            if (inserted.isNotEmpty()) forwardText(inserted)
+        }
+        fieldValue = TextFieldValue("")
     }
+
+    // No dispose hook closes anything here, deliberately: leaving
+    // this screen detaches the view only. The shells live in the
+    // runtime and outlive every screen (the pipe-era screen owned
+    // its sessions and closed them all on dispose, so navigating
+    // away killed every shell; that coupling is removed).
     LaunchedEffect(activeTab, linuxReady) {
         while (true) {
             output = sessionFor(activeTab)?.snapshot() ?: ""
             delay(400)
         }
     }
-    val lines = output.split("\n")
-    LaunchedEffect(lines.size) {
-        if (lines.isNotEmpty()) listState.animateScrollToItem(lines.size - 1)
+    val rendered = remember(output) { renderTerminal(output) }
+    LaunchedEffect(output) {
+        scrollState.animateScrollTo(scrollState.maxValue)
     }
-    val session = if (linuxReady) sessions[activeTab] else null
 
     Column(
         modifier = Modifier
@@ -231,56 +336,98 @@ fun ConsoleScreen() {
             } else {
                 Column(Modifier.fillMaxSize()) {
                     Box(Modifier.weight(1f)) {
-                        LazyColumn(state = listState) {
-                            items(lines) { line ->
-                                Text(
-                                    line.ifEmpty { " " },
-                                    color = AgtColors.TextPrimary,
-                                    fontSize = 11.5.sp,
-                                    fontFamily = FontFamily.Monospace
-                                )
-                            }
+                        Column(
+                            Modifier
+                                .fillMaxSize()
+                                .verticalScroll(scrollState)
+                        ) {
+                            Text(
+                                rendered,
+                                color = AgtColors.TextPrimary,
+                                fontSize = 11.5.sp,
+                                fontFamily = FontFamily.Monospace
+                            )
                         }
                     }
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("agt@host:~$ ", color = AgtColors.Gold, fontSize = 12.5.sp, fontFamily = FontFamily.Monospace)
+                        // No drawn prompt here: the prompt belongs to
+                        // the shell and appears in the transcript
+                        // above, printed by bash itself on its pty. A
+                        // static "agt@host" label would be the app
+                        // pretending to be the shell. The field below
+                        // draws no text of its own either: it is a
+                        // capture surface for the keyboard, kept
+                        // empty, and the hint under it is app
+                        // chrome, not shell output.
                         BasicTextField(
-                            value = input,
-                            onValueChange = { new ->
-                                if (ctrlArmed && new.length > input.length) {
-                                    val c = new.last().uppercaseChar()
-                                    if (c in 'A'..'Z') {
-                                        sessionFor(activeTab)?.sendRaw(((c - 'A' + 1).toChar()).toString())
-                                        ctrlArmed = false
-                                    } else {
-                                        input = new
-                                    }
-                                } else {
-                                    input = new
-                                }
-                            },
+                            value = fieldValue,
+                            onValueChange = { onFieldChange(it) },
                             singleLine = true,
                             textStyle = TextStyle(
                                 color = AgtColors.TextPrimary, fontSize = 12.5.sp,
                                 fontFamily = FontFamily.Monospace
                             ),
                             cursorBrush = SolidColor(AgtColors.Gold),
-                            modifier = Modifier.weight(1f),
+                            modifier = Modifier
+                                .weight(1f)
+                                .onPreviewKeyEvent { event ->
+                                    // Hardware and external keyboards:
+                                    // the keys a terminal lives on are
+                                    // forwarded as their terminal bytes
+                                    // and consumed, so they never also
+                                    // land in the field as text.
+                                    if (event.type != KeyEventType.KeyDown) {
+                                        false
+                                    } else {
+                                        val session = sessionFor(activeTab)
+                                        val bytes: String? = when {
+                                            event.isCtrlPressed &&
+                                                event.key.keyCode in Key.A.keyCode..Key.Z.keyCode ->
+                                                ((event.key.keyCode - Key.A.keyCode + 1)
+                                                    .toChar()).toString()
+                                            event.key == Key.Enter ||
+                                                event.key == Key.NumPadEnter -> "\r"
+                                            event.key == Key.Backspace -> "\u007F"
+                                            event.key == Key.Tab -> "\t"
+                                            event.key == Key.Escape -> "\u001B"
+                                            event.key == Key.DirectionUp -> "\u001B[A"
+                                            event.key == Key.DirectionDown -> "\u001B[B"
+                                            event.key == Key.DirectionLeft -> "\u001B[D"
+                                            event.key == Key.DirectionRight -> "\u001B[C"
+                                            else -> null
+                                        }
+                                        if (bytes != null && session != null) {
+                                            session.sendRaw(bytes)
+                                            true
+                                        } else {
+                                            bytes != null
+                                        }
+                                    }
+                                },
                             keyboardActions = KeyboardActions(
-                                onDone = {
-                                    sendLine(activeTab, input)
-                                    input = ""
-                                }
+                                // Soft keyboards whose Enter is an
+                                // action key rather than a committed
+                                // character: Done is the shell's
+                                // Enter, a bare carriage return.
+                                onDone = { sessionFor(activeTab)?.sendRaw("\r") }
                             ),
-                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done)
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            "Run",
-                            color = AgtColors.Gold, fontSize = 13.sp, fontWeight = FontWeight.Bold,
-                            modifier = Modifier.clickable {
-                                sendLine(activeTab, input)
-                                input = ""
+                            keyboardOptions = KeyboardOptions(
+                                capitalization = KeyboardCapitalization.None,
+                                autoCorrectEnabled = false,
+                                imeAction = ImeAction.Done
+                            ),
+                            decorationBox = { innerTextField ->
+                                Box {
+                                    if (fieldValue.text.isEmpty()) {
+                                        Text(
+                                            "tap and type: keystrokes go straight to the shell",
+                                            color = AgtColors.TextDim,
+                                            fontSize = 12.5.sp,
+                                            fontFamily = FontFamily.Monospace
+                                        )
+                                    }
+                                    innerTextField()
+                                }
                             }
                         )
                     }
@@ -293,7 +440,13 @@ fun ConsoleScreen() {
             KeyButton("tab", Modifier.weight(1f)) { sessionFor(activeTab)?.sendRaw("\t") }
             KeyButton("esc", Modifier.weight(1f)) { sessionFor(activeTab)?.sendRaw("\u001B") }
             KeyButton("paste", Modifier.weight(1f)) {
-                clipboard.getText()?.text?.let { input += it }
+                // Pasted text goes straight to the shell's
+                // terminal, raw: the shell's own bracketed-paste
+                // handling decides what it means there. It is
+                // never staged in a local buffer first.
+                clipboard.getText()?.text?.let { text ->
+                    sessionFor(activeTab)?.sendRaw(text)
+                }
             }
             KeyButton("keys", Modifier.weight(1f), active = keysOpen) { keysOpen = !keysOpen }
         }

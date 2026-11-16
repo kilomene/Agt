@@ -95,8 +95,6 @@ class ProcessSupervisor(
     fun isRunning(deploymentId: String): Boolean =
         running[deploymentId]?.isAlive == true
 
-    fun processFor(deploymentId: String): Process? = running[deploymentId]
-
     /** The host pid of a child process. The Android SDK does not expose
      * Process.pid(), so read it from the runtime implementation
      * reflectively; 0 when it cannot be determined. */

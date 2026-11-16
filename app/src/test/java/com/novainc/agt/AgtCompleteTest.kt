@@ -5,7 +5,9 @@ import com.novainc.agt.agent.DeviceIdentity
 import com.novainc.agt.agent.JobEngine
 import com.novainc.agt.deploy.DeploymentEngine
 import com.novainc.agt.deploy.Templates
+import androidx.compose.ui.graphics.Color
 import com.novainc.agt.linux.Proot
+import com.novainc.agt.ui.renderTerminal
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -99,5 +101,57 @@ class AgtCompleteTest {
         assertTrue(telegram.env.containsKey("BOT_TOKEN"))
         val discord = Templates.byId("discord-bot")!!
         assertTrue(discord.files.containsKey("discord_ws.py"))
+    }
+
+    @Test
+    fun terminalPlainTextPassesThroughUnstyled() {
+        val out = renderTerminal("hello\nworld")
+        assertEquals("hello\nworld", out.text)
+        assertTrue(out.spanStyles.isEmpty())
+    }
+
+    @Test
+    fun terminalSgrColourAppliesAndResets() {
+        val out = renderTerminal("\u001B[31mred\u001B[0m plain")
+        assertEquals("red plain", out.text)
+        assertEquals(1, out.spanStyles.size)
+        val span = out.spanStyles[0]
+        assertEquals(0, span.start)
+        assertEquals(3, span.end)
+        assertEquals(Color(0xFFFF7B72), span.item.color)
+    }
+
+    @Test
+    fun terminalBracketedPasteTogglesAreStripped() {
+        // bash wraps its prompt in these on a pty; they must never
+        // reach the screen as garbage.
+        val out = renderTerminal("\u001B[?2004hX\u001B[?2004l")
+        assertEquals("X", out.text)
+        assertTrue(out.spanStyles.isEmpty())
+    }
+
+    @Test
+    fun terminalOscSequenceIsStripped() {
+        val out = renderTerminal("\u001B]0;window title\u0007X")
+        assertEquals("X", out.text)
+    }
+
+    @Test
+    fun terminalBackspaceOverwrites() {
+        // The readline editing sequence: type echx, backspace, o.
+        assertEquals("echo", renderTerminal("echx\bo").text)
+    }
+
+    @Test
+    fun terminalCarriageReturnOverwritesLineStart() {
+        assertEquals("XYc", renderTerminal("abc\rXY").text)
+    }
+
+    @Test
+    fun terminalExtendedColoursResolve() {
+        val cube = renderTerminal("\u001B[38;5;196mR")
+        assertEquals(Color(0xFFFF0000), cube.spanStyles[0].item.color)
+        val rgb = renderTerminal("\u001B[38;2;10;20;30mT")
+        assertEquals(Color(10, 20, 30), rgb.spanStyles[0].item.color)
     }
 }

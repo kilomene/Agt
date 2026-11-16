@@ -94,71 +94,121 @@ class Proot(private val context: Context, private val store: AgtStore) {
      * itself in the result: the v1.6.4 field failure exited with
      * no output at all, and a silent failure cannot be diagnosed
      * from the phone's own telemetry. */
-    fun selfTest(timeoutSec: Long = 30): RunResult =
-        runOneShot(
-            "echo AGT_LINUX_OK",
-            env = mapOf("PROOT_VERBOSE" to "2"),
-            timeoutSec = timeoutSec
-        )
+    fun selfTest(timeoutSec: Long = 30): RunResult {
+        winningShape?.let { shape ->
+            val r = runOneShot(
+                "echo AGT_LINUX_OK",
+                env = mapOf("PROOT_VERBOSE" to "2"),
+                timeoutSec = timeoutSec,
+                shape = shape
+            )
+            if (r.exitCode == 0 && r.stdout.contains("AGT_LINUX_OK")) return r
+            winningShape = null
+        }
+        var last: RunResult? = null
+        for (shape in START_SHAPES) {
+            val r = runOneShot(
+                "echo AGT_LINUX_OK",
+                env = mapOf("PROOT_VERBOSE" to "2"),
+                timeoutSec = timeoutSec,
+                shape = shape
+            )
+            last = r
+            if (r.exitCode == 0 && r.stdout.contains("AGT_LINUX_OK")) {
+                winningShape = shape
+                return r
+            }
+        }
+        return last ?: RunResult(-2, "", "no start shape was attempted")
+    }
 
-    data class Diagnosis(val consoleOk: Boolean, val baselineLine: String, val report: String)
+    data class Diagnosis(
+        val consoleOk: Boolean,
+        val baselineLine: String,
+        val report: String,
+        val shapeName: String
+    )
+
+    /** The start shape that most recently answered the echo probe
+     * on this device, chosen by the self-setup search in selfTest()
+     * and diagnoseGuest(). Null until a probe answers. Every guest
+     * launch (self-test, console sessions, deployment processes,
+     * job commands) goes through the winning shape, so the app sets
+     * its own Linux up instead of betting every launch on the one
+     * shipped invocation. */
+    @Volatile
+    private var winningShape: StartShape? = null
+
+    /** The shape guest launches should use right now: the proven
+     * winner once a probe has answered, the shipped base shape
+     * until then. */
+    fun startShape(): StartShape = winningShape ?: SHAPE_BASE
 
     private val bashEcho = listOf("/bin/bash", "-c", "echo AGT_LINUX_OK")
 
-    /** The v1.6.6 diagnostic ladder. The guest dies on the phone
-     * with exit 255 and total silence while the identical tree runs
-     * under emulation and on the amd64 bench, so no off-phone test
-     * can find the fault: the phone itself has to say which step
-     * kills it. Each rung changes exactly one variable of the
-     * failing invocation, and the whole ladder rides telemetry as
-     * linuxLadder, so the verdict is readable from here.
+    /** The diagnostic ladder, kept in the app permanently. The
+     * guest died on the phone with exit 255 and total silence while
+     * the identical tree runs under emulation and on the amd64
+     * bench, so no off-phone test can find the fault: the phone
+     * itself has to say which step kills it. The whole ladder
+     * rides telemetry as linuxLadder, so the verdict is readable
+     * from here.
      *   H   content hashes of the files the loader chain reads,
      *       plus the /lib link target: rules the extractor in or out.
-     *   R1  the baseline invocation, exactly as shipped (fake root,
-     *       cleared environment, verbose proot).
-     *   R2  baseline without the fake-root flag.
-     *   R3  baseline with the app environment inherited, not cleared.
-     *   R4  a static ELF (cloudflared) bound into the rootfs and run
-     *       directly: proot and ptrace inside the guest, with no
-     *       dynamic loader involved.
-     *   R5  the dynamic loader itself as the tracee: whether the
-     *       interpreter file can execute at all under proot here.
-     *   R6  the pty probe: bash run under `script`, which gives it
-     *       a real pseudo-terminal. If this answers, the console
-     *       can become a true terminal like Termux (kernel echo,
-     *       a real prompt, job control) instead of plain pipes. */
+     *   S   one line per start shape, probed in START_SHAPES order:
+     *       the self-setup search. The first shape whose guest
+     *       answers the echo wins, is named on the "S win" line,
+     *       and is used by every guest launch from then on.
+     *   R4  a static ELF (cloudflared) bound into the rootfs and
+     *       run directly under the winning shape: proot and ptrace
+     *       inside the guest, with no dynamic loader involved.
+     *   R5  the dynamic loader itself as the tracee under the
+     *       winning shape: whether the interpreter file can execute
+     *       at all under proot here.
+     *   R6  the pty probe: the console's own terminal mechanism
+     *       (script giving bash a real pseudo-terminal) under the
+     *       winning shape. If this answers, the console is a true
+     *       terminal on this device, not a pipe mirror. */
     fun diagnoseGuest(): Diagnosis {
         val lines = mutableListOf<String>()
         lines += hashLine()
-        val r1 = selfTest()
-        val ok1 = r1.exitCode == 0 && r1.stdout.contains("AGT_LINUX_OK")
-        val base = rungLine("R1 base", r1)
-        lines += base
-        lines += rungLine(
-            "R2 no0",
-            runArgv(
-                prootArgv(fakeRoot = false, tail = bashEcho),
-                clearEnv = true, env = mapOf("PROOT_VERBOSE" to "2"), timeoutSec = 20
+        // The shape search comes first: one probe per start shape,
+        // in START_SHAPES order, and the first shape whose guest
+        // answers the echo wins and is kept for every later launch.
+        // These S lines cover the old ladder's variables (base was
+        // R1, no0 was R2, env was R3) and add the seccomp axis.
+        var winner: StartShape? = null
+        var baseLine = ""
+        var winLine = ""
+        for (shape in START_SHAPES) {
+            val r = runArgv(
+                prootArgv(shape, tail = bashEcho),
+                shape = shape,
+                env = mapOf("PROOT_VERBOSE" to "2"),
+                timeoutSec = 20
             )
-        )
-        lines += rungLine(
-            "R3 env",
-            runArgv(
-                prootArgv(fakeRoot = true, tail = bashEcho),
-                clearEnv = false, env = mapOf("PROOT_VERBOSE" to "2"), timeoutSec = 20
-            )
-        )
+            val line = rungLine("S ${shape.name}", r)
+            lines += line
+            if (shape == SHAPE_BASE) baseLine = line
+            if (winner == null && r.exitCode == 0 && r.stdout.contains("AGT_LINUX_OK")) {
+                winner = shape
+                winLine = line
+            }
+        }
+        winningShape = winner
+        lines += "S win=${winner?.name ?: "none"}"
+        val useShape = winner ?: SHAPE_BASE
         val cf = File(context.applicationInfo.nativeLibraryDir, "libcloudflared.so")
         lines += if (cf.exists()) {
             rungLine(
                 "R4 static",
                 runArgv(
                     prootArgv(
-                        fakeRoot = true,
+                        useShape,
                         binds = listOf(cf.absolutePath to "/usr/local/bin/cfstatic"),
                         tail = listOf("/usr/local/bin/cfstatic", "--version")
                     ),
-                    clearEnv = true, env = emptyMap(), timeoutSec = 20
+                    shape = useShape, env = emptyMap(), timeoutSec = 20
                 )
             )
         } else {
@@ -167,18 +217,25 @@ class Proot(private val context: Context, private val store: AgtStore) {
         lines += rungLine(
             "R5 loader",
             runArgv(
-                prootArgv(fakeRoot = true, tail = listOf("/lib/ld-linux-aarch64.so.1", "--version")),
-                clearEnv = true, env = emptyMap(), timeoutSec = 20
+                prootArgv(useShape, tail = listOf("/lib/ld-linux-aarch64.so.1", "--version")),
+                shape = useShape, env = emptyMap(), timeoutSec = 20
             )
         )
         lines += rungLine(
             "R6 pty",
             runOneShot(
-                "printf 'echo AGT_PTY_OK\\n' | script -qec 'bash' /dev/null",
-                timeoutSec = 25
+                "printf 'echo AGT_PTY_OK\\n' | script -qec '$PTY_SHELL_COMMAND' /dev/null",
+                timeoutSec = 25,
+                shape = useShape
             )
         )
-        return Diagnosis(ok1, base, lines.joinToString("\n"))
+        val ok = winner != null
+        return Diagnosis(
+            ok,
+            if (ok) winLine else baseLine,
+            lines.joinToString("\n"),
+            winner?.name ?: "none"
+        )
     }
 
     /** One ladder rung as a single telemetry line: name, exit code,
@@ -212,36 +269,99 @@ class Proot(private val context: Context, private val store: AgtStore) {
 
     /** Build a raw proot argv with a caller-chosen tracee, for the
      * diagnostic ladder. Mirrors buildProotCommand's flags so a rung
-     * differs from the shipped invocation only where it means to. */
+     * differs from the shape's invocation only where it means to.
+     * The tail runs under the same env -i guest cleaning as every
+     * production launch (envPrefix), so a rung measures its shape,
+     * not a different environment. */
     private fun prootArgv(
-        fakeRoot: Boolean,
+        shape: StartShape,
         binds: List<Pair<String, String>> = emptyList(),
         tail: List<String>
     ): List<String> {
         tmpDir.mkdirs()
-        val cmd = mutableListOf(prootBin.absolutePath, "-R", rootfsDir.absolutePath)
-        if (fakeRoot) cmd += "-0"
+        val cmd = mutableListOf(
+            prootBin.absolutePath, "--link2symlink", "--kill-on-exit",
+            "-R", rootfsDir.absolutePath
+        )
+        if (shape.fakeRoot) cmd += "-0"
         cmd += listOf("-w", "/root", "-b", "/dev", "-b", "/proc", "-b", "/sys")
         for ((host, guest) in binds) cmd += listOf("-b", "$host:$guest")
+        cmd += envPrefix()
         cmd += tail
         return cmd
     }
 
+    /** Put a launch's HOST environment on a process builder. The
+     * environment proot itself runs in is a separate layer from
+     * the environment the guest sees, and the two are never mixed:
+     * this applier owns the host layer only. The host env is
+     * cleared first when the shape says so, then rebuilt with
+     * exactly the variables proot itself needs (hostEnvFor), the
+     * shape's own host variables, and the caller's host extras.
+     * The guest layer is applied inside proot instead: every
+     * guest argv carries /usr/bin/env -i with the clean guest set
+     * (see the companion's envPrefix), so no host path and no
+     * Android runtime variable can leak into the guest, and the
+     * guest set is identical on every launch. One applier for
+     * every guest launch, so a shape means the same thing
+     * everywhere. */
+    private fun applyEnv(pb: ProcessBuilder, shape: StartShape, extra: Map<String, String>) {
+        if (shape.clearEnv) pb.environment().clear()
+        pb.environment().putAll(hostEnvFor(shape, extra))
+    }
+
+    /** The host environment for one guest launch: the variables
+     * proot itself reads, and nothing else.
+     *   PROOT_TMP_DIR and TMPDIR: proot creates its loader and
+     *     extension temp files here. Android has no host /tmp to
+     *     fall back to, so both names point at the app's scratch
+     *     dir, which commandFor creates before every launch and
+     *     nothing ever deletes. (Bench: either variable alone is
+     *     enough for proot to find a temp dir; both are set
+     *     because the fallback chain is proot's own business and
+     *     the second name costs nothing.)
+     *   LD_LIBRARY_PATH: the native library dir. This build of
+     *     proot is statically linked, so the variable is inert
+     *     for it (bench: a deliberately bogus value changes
+     *     nothing); it is set because the production launchers
+     *     this design follows set it, and a future dynamically
+     *     linked proot would need it to find its libraries.
+     *   PROOT_LOADER and PROOT_LOADER_32: set ONLY when a loader
+     *     file actually ships in the native library dir. This
+     *     proot build consults PROOT_LOADER (bench-proven: a
+     *     nonexistent path fails every launch loudly, and the
+     *     binary's own extracted loader works), so pointing it
+     *     at a file that does not exist would break every start;
+     *     while no loader ships, the variables stay unset and
+     *     proot extracts its embedded loader into PROOT_TMP_DIR,
+     *     the path the working tunnel launch already proves.
+     * Shape extras and caller extras join only when they are
+     * host keys (isHostEnvKey); a caller's guest variables travel
+     * in the argv's env -i set instead, never through here. */
+    private fun hostEnvFor(shape: StartShape, extra: Map<String, String>): Map<String, String> {
+        val env = LinkedHashMap<String, String>()
+        env["PROOT_TMP_DIR"] = tmpDir.absolutePath
+        env["TMPDIR"] = tmpDir.absolutePath
+        env["LD_LIBRARY_PATH"] = context.applicationInfo.nativeLibraryDir
+        val loader = File(context.applicationInfo.nativeLibraryDir, "libprootloader.so")
+        if (loader.exists()) env["PROOT_LOADER"] = loader.absolutePath
+        val loader32 = File(context.applicationInfo.nativeLibraryDir, "libprootloader32.so")
+        if (loader32.exists()) env["PROOT_LOADER_32"] = loader32.absolutePath
+        env.putAll(shape.extraEnv)
+        for ((k, v) in extra) if (isHostEnvKey(k)) env[k] = v
+        return env
+    }
+
     /** Run an explicit argv, capturing both streams: the diagnostic
-     * ladder's raw proot invocations. clearEnv mirrors the shipped
-     * behaviour; the ladder's R3 rung turns it off. */
+     * ladder's raw proot invocations. */
     fun runArgv(
         argv: List<String>,
-        clearEnv: Boolean,
+        shape: StartShape,
         env: Map<String, String>,
         timeoutSec: Long
     ): RunResult {
         val pb = ProcessBuilder(argv)
-        if (clearEnv) pb.environment().clear()
-        pb.environment().putAll(envFor(env).associate {
-            val i = it.indexOf('=')
-            it.substring(0, i) to it.substring(i + 1)
-        })
+        applyEnv(pb, shape, env)
         pb.redirectErrorStream(false)
         val proc = pb.start()
         val out = StringBuilder()
@@ -594,49 +714,156 @@ class Proot(private val context: Context, private val store: AgtStore) {
         guestCommand: String,
         workdir: String = "/root",
         env: Map<String, String> = emptyMap(),
-        binds: List<Pair<String, String>> = emptyList()
+        binds: List<Pair<String, String>> = emptyList(),
+        shape: StartShape = startShape()
     ): List<String> {
         // PROOT_TMP_DIR must exist before PRoot starts; a missing
         // scratch dir was one of the field console errors, and the
         // dir is never deleted once created.
         tmpDir.mkdirs()
         return buildProotCommand(
-            prootBin.absolutePath, rootfsDir.absolutePath, guestCommand, workdir, binds
+            prootBin.absolutePath, rootfsDir.absolutePath, guestCommand, workdir, binds, shape, env
         )
     }
 
+    /** One way of starting the guest, on the HOST side: the
+     * fake-root flag, whether proot's own environment is cleared
+     * before the host set is rebuilt, and any extra variables the
+     * shape needs (read by proot itself, like PROOT_NO_SECCOMP).
+     * The GUEST environment is not part of a shape: every guest
+     * command, on every shape, runs under /usr/bin/env -i with
+     * the one clean guest set (the companion's GUEST_ENV_BASE),
+     * the two-layer pattern the production Android proot
+     * launchers use. A shape is data, so the self-setup search,
+     * the ladder and every launch site all mean the same thing
+     * by the same name. */
+    data class StartShape(
+        val name: String,
+        val fakeRoot: Boolean,
+        val clearEnv: Boolean,
+        val extraEnv: Map<String, String> = emptyMap()
+    )
+
     companion object {
-        /** Pure command builder, unit-testable without Android. */
+        /** The shipped invocation: fake root, cleared environment. */
+        val SHAPE_BASE = StartShape("base", fakeRoot = true, clearEnv = true)
+
+        /** Base with proot's seccomp acceleration off. The shipped
+         * proot binary carries the vendor workaround string for
+         * this variable, and the bench verdict (see the root-cause
+         * report of 2026-11-16) makes the acceleration the leading
+         * suspect for the guest tracee dying by signal on the
+         * phone, so this shape is probed first. */
+        val SHAPE_NOSECCOMP = StartShape(
+            "noseccomp", fakeRoot = true, clearEnv = true,
+            extraEnv = mapOf("PROOT_NO_SECCOMP" to "1")
+        )
+        val SHAPE_NOSECCOMP_NO0 = StartShape(
+            "noseccomp-no0", fakeRoot = false, clearEnv = true,
+            extraEnv = mapOf("PROOT_NO_SECCOMP" to "1")
+        )
+        val SHAPE_NO0 = StartShape("no0", fakeRoot = false, clearEnv = true)
+        val SHAPE_ENV = StartShape("env", fakeRoot = true, clearEnv = false)
+        val SHAPE_NO0_ENV = StartShape("no0-env", fakeRoot = false, clearEnv = false)
+
+        /** Probe order for the self-setup search, safest first:
+         * the seccomp-off shape (the leading suspect's workaround),
+         * the shipped base, the no-fake-root pair, then the
+         * inherited-environment pair (closest to the tunnel's
+         * environment handling, and the least controlled, so last). */
+        val START_SHAPES = listOf(
+            SHAPE_NOSECCOMP, SHAPE_BASE, SHAPE_NOSECCOMP_NO0,
+            SHAPE_NO0, SHAPE_ENV, SHAPE_NO0_ENV
+        )
+
+        /** The command script runs to give the console shell its
+         * real terminal: size the pty (script inherits a 0 by 0
+         * size from the app's pipes, which full-screen programs
+         * cannot draw into), then replace the shell with a login
+         * bash, the way proot-distro starts its Debian shells. */
+        const val PTY_SHELL_COMMAND = "stty rows 40 cols 120; exec bash -l"
+
+        /** The clean guest environment, the only variables a
+         * guest process starts with: applied inside proot by
+         * /usr/bin/env -i (envPrefix), never by inheritance from
+         * the host process. This is the guest half of the
+         * two-layer environment the production Android proot
+         * launchers use; the host half (the variables proot
+         * itself reads) lives in hostEnvFor. TMPDIR here is the
+         * GUEST's /tmp, inside the rootfs; it has nothing to do
+         * with the host-side PROOT_TMP_DIR. */
+        val GUEST_ENV_BASE: Map<String, String> = linkedMapOf(
+            "HOME" to "/root",
+            "USER" to "root",
+            "LANG" to "C.UTF-8",
+            "PATH" to "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "TERM" to "xterm-256color",
+            "TMPDIR" to "/tmp"
+        )
+
+        /** Host-layer keys: variables read by proot itself or by
+         * the host dynamic loader. They belong in proot's own
+         * environment and must never be passed into the guest's
+         * env -i set: a guest has no use for a host PROOT_TMP_DIR
+         * path, and the bench showed the old launch leaking
+         * exactly that into the guest. */
+        fun isHostEnvKey(key: String): Boolean =
+            key.startsWith("PROOT_") || key == "LD_LIBRARY_PATH"
+
+        /** The guest environment for one launch as KEY=VALUE
+         * arguments: the clean base set plus the caller's guest
+         * extras (deployment variables, job variables), with
+         * host-layer keys filtered out. */
+        fun guestEnvList(extra: Map<String, String> = emptyMap()): List<String> {
+            val merged = LinkedHashMap(GUEST_ENV_BASE)
+            for ((k, v) in extra) if (!isHostEnvKey(k)) merged[k] = v
+            return merged.map { (k, v) -> "$k=$v" }
+        }
+
+        /** The argv prefix that applies the clean guest
+         * environment inside proot: /usr/bin/env -i followed by
+         * the guest set. Every guest argv in the app (one-shots,
+         * background processes, ladder rungs, the console's
+         * script tail) starts its tracee this way. */
+        fun envPrefix(extra: Map<String, String> = emptyMap()): List<String> =
+            listOf("/usr/bin/env", "-i") + guestEnvList(extra)
+
+        /** Pure command builder, unit-testable without Android.
+         * Every guest launch carries the two proot extensions the
+         * distro tooling uses on Android: --link2symlink (hardlink
+         * emulation for SELinux-enforcing app data) and
+         * --kill-on-exit (no guest process outlives its proot).
+         * Both are bench-proven neutral for startup. The tracee
+         * is env -i with the clean guest set in front of
+         * /bin/bash -c: the guest environment is constructed
+         * inside proot, never inherited from the host process. */
         fun buildProotCommand(
             prootPath: String,
             rootfsPath: String,
             guestCommand: String,
             workdir: String = "/root",
-            binds: List<Pair<String, String>> = emptyList()
+            binds: List<Pair<String, String>> = emptyList(),
+            shape: StartShape = SHAPE_BASE,
+            env: Map<String, String> = emptyMap()
         ): List<String> {
             val cmd = mutableListOf(
                 prootPath,
-                "-R", rootfsPath,
-                "-0",
+                "--link2symlink",
+                "--kill-on-exit",
+                "-R", rootfsPath
+            )
+            if (shape.fakeRoot) cmd += "-0"
+            cmd += listOf(
                 "-w", workdir,
                 "-b", "/dev",
                 "-b", "/proc",
                 "-b", "/sys"
             )
             for ((host, guest) in binds) cmd += listOf("-b", "$host:$guest")
+            cmd += envPrefix(env)
             cmd += listOf("/bin/bash", "-c", guestCommand)
             return cmd
         }
-    }
-
-    fun envFor(extra: Map<String, String>): Array<String> {
-        val base = mapOf(
-            "PROOT_TMP_DIR" to tmpDir.absolutePath,
-            "HOME" to "/root",
-            "TERM" to "xterm",
-            "PATH" to "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-        ) + extra
-        return base.map { (k, v) -> "$k=$v" }.toTypedArray()
     }
 
     data class RunResult(val exitCode: Int, val stdout: String, val stderr: String)
@@ -646,14 +873,11 @@ class Proot(private val context: Context, private val store: AgtStore) {
         guestCommand: String,
         workdir: String = "/root",
         env: Map<String, String> = emptyMap(),
-        timeoutSec: Long = 120
+        timeoutSec: Long = 120,
+        shape: StartShape = startShape()
     ): RunResult {
-        val pb = ProcessBuilder(commandFor(guestCommand, workdir, env))
-        pb.environment().clear()
-        pb.environment().putAll(envFor(env).associate {
-            val i = it.indexOf('=')
-            it.substring(0, i) to it.substring(i + 1)
-        })
+        val pb = ProcessBuilder(commandFor(guestCommand, workdir, env, shape = shape))
+        applyEnv(pb, shape, env)
         pb.redirectErrorStream(false)
         val proc = pb.start()
         val out = StringBuilder()
@@ -678,70 +902,111 @@ class Proot(private val context: Context, private val store: AgtStore) {
         logFile: File,
         binds: List<Pair<String, String>> = emptyList()
     ): Process {
-        val pb = ProcessBuilder(commandFor(guestCommand, workdir, env, binds))
-        pb.environment().clear()
-        pb.environment().putAll(envFor(env).associate {
-            val i = it.indexOf('=')
-            it.substring(0, i) to it.substring(i + 1)
-        })
+        val shape = startShape()
+        val pb = ProcessBuilder(commandFor(guestCommand, workdir, env, binds, shape))
+        applyEnv(pb, shape, env)
         pb.redirectOutput(ProcessBuilder.Redirect.appendTo(logFile))
         pb.redirectError(ProcessBuilder.Redirect.appendTo(logFile))
         return pb.start()
     }
 
-    /** A persistent interactive guest shell for the console screen.
-     * Binds mount host directories into the guest (a deployment
-     * session binds its own directory at its workdir, the same mount
-     * the supervisor gives the deployment's process). */
+    /** A persistent interactive guest shell for the console screen:
+     * a real terminal, not a pipe mirror. The guest tail is
+     * util-linux `script`, which allocates a genuine pseudo-terminal
+     * inside the guest and runs a login bash on it (the ladder's R6
+     * mechanism, bench-proven end to end): the shell itself echoes
+     * typing as it is typed, prints its own prompt, takes control
+     * keys through the pty line discipline, and runs interactive
+     * programs. Binds mount host directories into the guest (a
+     * deployment session binds its own directory at its workdir,
+     * the same mount the supervisor gives the deployment's process).
+     *
+     * The returned session carries a keeper: if the shell process
+     * ever exits, for any reason, a fresh shell starts immediately
+     * and the session continues on it. The console never sits in
+     * front of a dead shell. */
     fun startShell(workdir: String = "/root", binds: List<Pair<String, String>> = emptyList()): ShellSession {
-        val args = mutableListOf(
-            prootBin.absolutePath,
-            "-R", rootfsDir.absolutePath,
-            "-0",
-            "-w", workdir,
-            "-b", "/dev",
-            "-b", "/proc",
-            "-b", "/sys"
-        )
-        for ((host, guest) in binds) {
-            args.add("-b")
-            args.add("$host:$guest")
-        }
-        args.add("/bin/bash")
-        val pb = ProcessBuilder(args)
-        pb.environment().clear()
-        pb.environment().putAll(envFor(emptyMap()).associate {
-            val i = it.indexOf('=')
-            it.substring(0, i) to it.substring(i + 1)
-        })
-        pb.redirectErrorStream(true)
-        val proc = pb.start()
-        return ShellSession(proc)
+        return ShellSession { startShellProcess(workdir, binds) }
     }
 
-    class ShellSession(private val proc: Process) {
+    /** Start one shell process on a real pty, on the start shape
+     * that currently answers. The session's keeper calls this again
+     * every time a shell exits, so a restart always uses the
+     * freshest proven shape. */
+    private fun startShellProcess(workdir: String, binds: List<Pair<String, String>>): Process {
+        val shape = startShape()
+        val args = mutableListOf(
+            prootBin.absolutePath,
+            "--link2symlink", "--kill-on-exit",
+            "-R", rootfsDir.absolutePath
+        )
+        if (shape.fakeRoot) args += "-0"
+        args += listOf("-w", workdir, "-b", "/dev", "-b", "/proc", "-b", "/sys")
+        for ((host, guest) in binds) args += listOf("-b", "$host:$guest")
+        args += envPrefix()
+        args += listOf("/usr/bin/script", "-qec", PTY_SHELL_COMMAND, "/dev/null")
+        val pb = ProcessBuilder(args)
+        applyEnv(pb, shape, emptyMap())
+        pb.redirectErrorStream(true)
+        return pb.start()
+    }
+
+    /** A console shell session with a keeper. The session owns a
+     * starter that produces a fresh shell process; the keeper
+     * thread drains the current process into the transcript and,
+     * the moment it exits, starts the next one and says so in the
+     * transcript. The shell behind the console is therefore always
+     * a living one: an exit (a crash, the owner typing exit, a
+     * killed process) is a restart, never a dead screen. Only
+     * close() ends the session for good. */
+    class ShellSession(private val starter: () -> Process) {
         private val output = StringBuilder()
         private val lock = Any()
-        private val reader = Thread {
-            val buf = ByteArray(4096)
-            try {
-                while (true) {
-                    val n = proc.inputStream.read(buf)
-                    if (n < 0) break
-                    append(String(buf, 0, n))
+
+        @Volatile
+        private var proc: Process = starter()
+
+        @Volatile
+        private var closed = false
+
+        private val keeper = Thread {
+            var fastDeaths = 0
+            while (!closed) {
+                val current = proc
+                val startedAt = System.currentTimeMillis()
+                try {
+                    val buf = ByteArray(4096)
+                    while (true) {
+                        val n = current.inputStream.read(buf)
+                        if (n < 0) break
+                        append(String(buf, 0, n))
+                    }
+                } catch (e: Exception) {
+                    // Stream closed: the process is ending either way.
                 }
-            } catch (e: Exception) {
-                // process ended
-            }
-            // The transcript must say the shell ended, in words. A
-            // silent blank console is what the owner filmed: the
-            // shell had died on arrival and the screen showed
-            // nothing, forever, with no hint anything was wrong.
-            try {
-                val code = proc.waitFor()
-                append("\n[agt] this shell exited (code $code). Send a command to start a new shell.\n")
-            } catch (e: Exception) {
-                // Process state unavailable; the transcript simply ends.
+                val code = try { current.waitFor() } catch (e: Exception) { -1 }
+                if (closed) break
+                // The shell exited. Say so in the transcript, then
+                // start its replacement at once: the keeper's whole
+                // job is that this session never presents a dead
+                // shell. A shell that dies within moments of
+                // starting (the guest cannot start on this device)
+                // backs off a few seconds between attempts so the
+                // retry never becomes a hot spin, and it never
+                // gives up.
+                val livedMs = System.currentTimeMillis() - startedAt
+                fastDeaths = if (livedMs < 3_000) fastDeaths + 1 else 0
+                append("\n[agt] this shell exited (code $code). Restarting it now.\n")
+                if (fastDeaths > 0) {
+                    try { Thread.sleep(minOf(fastDeaths * 1_000L, 5_000L)) } catch (e: Exception) { }
+                }
+                if (closed) break
+                try {
+                    proc = starter()
+                } catch (e: Exception) {
+                    append("\n[agt] the shell could not be restarted (${e.message}); retrying.\n")
+                    try { Thread.sleep(2_000) } catch (ie: Exception) { }
+                }
             }
         }.apply { isDaemon = true; start() }
 
@@ -752,46 +1017,52 @@ class Proot(private val context: Context, private val store: AgtStore) {
             }
         }
 
-        /** Append text produced by the app itself (a sent command's
-         * echo, a shell restart note) to the transcript. */
-        fun note(text: String) {
-            append(text)
-        }
-
-        fun send(line: String) {
-            // Local echo: this shell runs over pipes, not a tty, so
-            // nothing else echoes what was typed. Without this, a
-            // sent command never appears in the transcript at all
-            // (the owner's Termux comparison: in Termux you see your
-            // typing and your command on the console; here both were
-            // invisible). This echo is the app's own, and it must be
-            // removed the day the session gains a real pty, or every
-            // command would print twice.
-            append(line + "\n")
+        /** Write bytes to the living shell. The pty echoes input
+         * itself, so nothing is echoed locally here: a local echo
+         * on top of the pty's would print every line twice (the
+         * pipe-era ShellSession echoed locally for exactly the
+         * opposite reason, and its comment said to remove it the
+         * day the session gained a real pty; that day is this
+         * design). If a write lands in the moment between a shell's
+         * exit and its keeper restart, it is retried once against
+         * the fresh shell instead of being lost. */
+        private fun writeRaw(bytes: ByteArray) {
             try {
-                proc.outputStream.write((line + "\n").toByteArray())
+                proc.outputStream.write(bytes)
+                proc.outputStream.flush()
+                return
+            } catch (e: Exception) {
+                if (closed) return
+            }
+            try { Thread.sleep(400) } catch (e: Exception) { }
+            try {
+                proc.outputStream.write(bytes)
                 proc.outputStream.flush()
             } catch (e: Exception) {
-                // process ended; the reader thread records the exit
+                // The keeper is still restarting; the transcript
+                // shows the restart, and the next send lands.
             }
         }
 
-        /** Raw bytes with no newline: control keys (tab, escape,
-         * arrow sequences, control characters) from the console key bar. */
+        /** Raw bytes to the shell's terminal, exactly as given:
+         * the console forwards every typed keystroke through here
+         * as it happens (committed characters from the soft
+         * keyboard, hardware key events, and the extra-keys row:
+         * tab, escape, arrow sequences, control characters).
+         * Nothing is line-buffered on the app side; the shell
+         * echoes and edits through its own pty, so what the
+         * console shows is what the shell produced. Through the
+         * pty these do what they do in Termux: Ctrl-C interrupts
+         * the foreground program, tab completes, arrows move
+         * through history. */
         fun sendRaw(text: String) {
-            try {
-                proc.outputStream.write(text.toByteArray())
-                proc.outputStream.flush()
-            } catch (e: Exception) {
-                // process ended
-            }
+            writeRaw(text.toByteArray())
         }
 
         fun snapshot(): String = synchronized(lock) { output.toString() }
 
-        val alive: Boolean get() = proc.isAlive
-
         fun close() {
+            closed = true
             try { proc.destroy() } catch (e: Exception) { }
         }
     }

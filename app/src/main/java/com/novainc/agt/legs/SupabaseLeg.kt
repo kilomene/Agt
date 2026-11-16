@@ -76,12 +76,6 @@ class SupabaseLeg(private val store: AgtStore) {
         }
     }
 
-    suspend fun hostUuid(deviceId: String): String? = withContext(Dispatchers.IO) {
-        val text = call(request("/rest/v1/hosts?device_id=eq.$deviceId&select=id", "GET"))
-        val arr = gson.fromJson(text, Array<JsonObject>::class.java)
-        if (arr.isEmpty()) null else arr[0].get("id").asString
-    }
-
     suspend fun upsertHost(deviceId: String, name: String, publicKey: String, telemetry: JsonObject): String =
         withContext(Dispatchers.IO) {
             val body = JsonObject().apply {
