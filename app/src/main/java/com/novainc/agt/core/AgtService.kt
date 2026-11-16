@@ -50,9 +50,38 @@ class AgtService : Service() {
     override fun onCreate() {
         super.onCreate()
         createChannel()
+        ensureExternalHome()
         AlertNotifier.ensureChannel(applicationContext)
         networkMonitor = NetworkMonitor(applicationContext).also { it.start(scope) }
         network = networkMonitor
+    }
+
+    /**
+     * Give the owner a visible home for the app on shared storage:
+     * Android/data/com.novainc.agt/files. Android creates that folder
+     * only once the app actually uses its external files dir, and the
+     * owner looks for the app there (his report 2026-11-16: no
+     * com.novainc.agt folder under Android/data). Create it, a home
+     * subfolder, and a README that says what lives where, on every
+     * service start. A storage failure must never stop the service.
+     */
+    private fun ensureExternalHome() {
+        try {
+            val ext = getExternalFilesDir(null) ?: return
+            java.io.File(ext, "home").mkdirs()
+            val readme = java.io.File(ext, "README.txt")
+            if (!readme.exists()) {
+                readme.writeText(
+                    "AGT lives here: Android/data/com.novainc.agt/files\n" +
+                        "home/ is your folder on this phone's shared storage.\n" +
+                        "The server itself (deployments, keys, logs) stays in the\n" +
+                        "app's private storage, where other apps cannot touch it.\n"
+                )
+            }
+            HeartbeatLog.append(applicationContext, "external home ready: ${ext.absolutePath}")
+        } catch (e: Exception) {
+            HeartbeatLog.append(applicationContext, "external home failed: ${e.message}")
+        }
     }
 
     /**
