@@ -97,9 +97,8 @@ class FirebaseLeg(private val store: AgtStore) {
     private fun markProven(custom: String) {
         provenCustomToken = custom
         try {
-            val settings = store.loadSettings()
-            if (settings.provenFirebaseToken != custom) {
-                store.saveSettings(settings.copy(provenFirebaseToken = custom))
+            store.updateSettings { s ->
+                if (s.provenFirebaseToken == custom) s else s.copy(provenFirebaseToken = custom)
             }
         } catch (e: Exception) {
             // Persistence is a hardening copy; the in-memory proof

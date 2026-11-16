@@ -104,23 +104,22 @@ class AgtRuntime private constructor(private val context: Context) {
     private val logUploadOffsets = mutableMapOf<String, Int>()
 
     /** Ensure a device id exists; the id is stable per phone, forever. */
-    fun deviceId(): String {
-        val settings = store.loadSettings()
-        if (settings.deviceId.isNotEmpty()) return settings.deviceId
-        val id = "agt-" + UUID.randomUUID().toString().take(8)
-        store.saveSettings(settings.copy(deviceId = id))
-        return id
-    }
+    fun deviceId(): String =
+        store.updateSettings { s ->
+            if (s.deviceId.isNotEmpty()) s
+            else s.copy(deviceId = "agt-" + UUID.randomUUID().toString().take(8))
+        }.deviceId
 
-    fun pairingCode(): String {
-        val settings = store.loadSettings()
-        if (settings.pairingCode.isNotEmpty()) return settings.pairingCode
-        val code = (100000..999999).random().toString()
-        // A freshly minted code here is a main-agent bootstrap code:
-        // it carries no agent label.
-        store.saveSettings(settings.copy(pairingCode = code, pairingAgentId = ""))
-        return code
-    }
+    fun pairingCode(): String =
+        store.updateSettings { s ->
+            if (s.pairingCode.isNotEmpty()) s
+            else s.copy(
+                // A freshly minted code here is a main-agent
+                // bootstrap code: it carries no agent label.
+                pairingCode = (100000..999999).random().toString(),
+                pairingAgentId = ""
+            )
+        }.pairingCode
 
     /** Mint the one outstanding pairing code for one agentId: a
      * pair job presenting this code plus that agent's public key
@@ -128,9 +127,8 @@ class AgtRuntime private constructor(private val context: Context) {
      * untouched. Minting replaces any code already outstanding, the
      * same one-slot rule the pairing code has always had. */
     fun mintAgentPairingCode(agentId: String): String {
-        val settings = store.loadSettings()
         val code = (100000..999999).random().toString()
-        store.saveSettings(settings.copy(pairingCode = code, pairingAgentId = agentId.trim()))
+        store.updateSettings { s -> s.copy(pairingCode = code, pairingAgentId = agentId.trim()) }
         return code
     }
 
@@ -138,10 +136,13 @@ class AgtRuntime private constructor(private val context: Context) {
      * screen's revoke button). The main agent cannot be revoked;
      * AgentTrust refuses and this returns false. */
     fun revokeAgent(agentId: String): Boolean {
-        val change = com.novainc.agt.agent.AgentTrust.revokeAgent(store.loadSettings(), agentId)
-        val updated = change.settings ?: return false
-        store.saveSettings(updated)
-        return true
+        var change: com.novainc.agt.agent.AgentTrust.Change? = null
+        store.updateSettings { s ->
+            val ch = com.novainc.agt.agent.AgentTrust.revokeAgent(s, agentId)
+            change = ch
+            ch.settings ?: s
+        }
+        return change?.settings != null
     }
 
     fun telemetryJson(): JsonObject {
@@ -453,8 +454,10 @@ class AgtRuntime private constructor(private val context: Context) {
         try {
             com.google.firebase.messaging.FirebaseMessaging.getInstance().token
                 .addOnSuccessListener { token ->
-                    if (!token.isNullOrBlank() && token != store.loadSettings().fcmToken) {
-                        store.saveSettings(store.loadSettings().copy(fcmToken = token))
+                    if (!token.isNullOrBlank()) {
+                        store.updateSettings { s ->
+                            if (s.fcmToken == token) s else s.copy(fcmToken = token)
+                        }
                     }
                 }
         } catch (e: Exception) {

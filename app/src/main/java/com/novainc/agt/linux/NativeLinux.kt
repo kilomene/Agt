@@ -141,8 +141,7 @@ class NativeLinux(
             }
             tmpDir.mkdirs()
             homeDir.mkdirs()
-            val settings = store.loadSettings()
-            store.saveSettings(settings.copy(rootfsVersion = AgtConfig.BOOTSTRAP_VERSION))
+            store.updateSettings { s -> s.copy(rootfsVersion = AgtConfig.BOOTSTRAP_VERSION) }
             onProgress(100, "Linux tools installed")
             Result.success(Unit)
         } catch (e: Exception) {

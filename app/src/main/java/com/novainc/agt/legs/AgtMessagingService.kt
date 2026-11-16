@@ -37,9 +37,8 @@ class AgtMessagingService : FirebaseMessagingService() {
     override fun onNewToken(token: String) {
         super.onNewToken(token)
         val store = AgtStore(applicationContext)
-        val settings = store.loadSettings()
-        if (settings.fcmToken == token) return
-        store.saveSettings(settings.copy(fcmToken = token))
+        if (store.loadSettings().fcmToken == token) return
+        store.updateSettings { s -> if (s.fcmToken == token) s else s.copy(fcmToken = token) }
         // Publish the new address at once instead of waiting for the next
         // 60 second heartbeat: upsert the host row with fresh telemetry.
         svcScope.launch {
@@ -49,14 +48,10 @@ class AgtMessagingService : FirebaseMessagingService() {
                 // an empty id created a dead host row keyed by "" that
                 // nothing else could ever match, so ensure the id the
                 // same way AgtRuntime.deviceId() does before writing.
-                val fresh = store.loadSettings()
-                val deviceId = if (fresh.deviceId.isNotEmpty()) {
-                    fresh.deviceId
-                } else {
-                    val generated = "agt-" + java.util.UUID.randomUUID().toString().take(8)
-                    store.saveSettings(fresh.copy(deviceId = generated))
-                    generated
-                }
+                val deviceId = store.updateSettings { s ->
+                    if (s.deviceId.isNotEmpty()) s
+                    else s.copy(deviceId = "agt-" + java.util.UUID.randomUUID().toString().take(8))
+                }.deviceId
                 val telemetry = JsonObject().apply {
                     addProperty("fcmToken", token)
                     addProperty("fcmRotatedAt", System.currentTimeMillis())

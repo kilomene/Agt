@@ -191,18 +191,21 @@ class JobEngine(
             return fail("pairing code is for a different agent")
         }
         val agentId = labelled.ifEmpty { named }
-        val current = store.loadSettings()
         return if (agentId.isEmpty()) {
-            store.saveSettings(AgentTrust.pairAsMain(current, key))
+            store.updateSettings { current -> AgentTrust.pairAsMain(current, key) }
             JsonObject().apply {
                 addProperty("paired", true)
                 addProperty("agent", AgentTrust.MAIN_AGENT_ID)
                 addProperty("devicePublicKey", identity.publicKeyBase64())
             }
         } else {
-            val change = AgentTrust.pairAsAgent(current, agentId, key)
-            val updated = change.settings ?: return fail(change.error ?: "pairing refused")
-            store.saveSettings(updated)
+            var change: AgentTrust.Change? = null
+            store.updateSettings { current ->
+                val ch = AgentTrust.pairAsAgent(current, agentId, key)
+                change = ch
+                ch.settings ?: current
+            }
+            if (change?.settings == null) return fail(change?.error ?: "pairing refused")
             JsonObject().apply {
                 addProperty("paired", true)
                 addProperty("agent", agentId)
@@ -279,8 +282,7 @@ class JobEngine(
             }
             "firebase_token" -> {
                 val token = payload.get("token")?.asString ?: return fail("token missing")
-                val settings = store.loadSettings()
-                store.saveSettings(settings.copy(firebaseToken = token))
+                store.updateSettings { s -> s.copy(firebaseToken = token) }
                 onFirebaseTokenSaved?.invoke()
                 JsonObject().apply { addProperty("saved", true) }
             }
@@ -290,9 +292,13 @@ class JobEngine(
                 // so an admitted agent can never admit another.
                 val agentId = payload.get("agentId")?.asString ?: return fail("agentId missing")
                 val key = payload.get("publicKey")?.asString ?: return fail("publicKey missing")
-                val change = AgentTrust.applyAgentAdd(store.loadSettings(), signer, agentId, key)
-                val updated = change.settings ?: return fail(change.error ?: "agent_add refused")
-                store.saveSettings(updated)
+                var change: AgentTrust.Change? = null
+                store.updateSettings { current ->
+                    val ch = AgentTrust.applyAgentAdd(current, signer, agentId, key)
+                    change = ch
+                    ch.settings ?: current
+                }
+                if (change?.settings == null) return fail(change?.error ?: "agent_add refused")
                 JsonObject().apply {
                     addProperty("added", true)
                     addProperty("addedAgent", agentId)
@@ -302,9 +308,13 @@ class JobEngine(
                 // Same gate as agent_add, and the main agent's own
                 // entry is unrevocable inside AgentTrust.
                 val agentId = payload.get("agentId")?.asString ?: return fail("agentId missing")
-                val change = AgentTrust.applyAgentRevoke(store.loadSettings(), signer, agentId)
-                val updated = change.settings ?: return fail(change.error ?: "agent_revoke refused")
-                store.saveSettings(updated)
+                var change: AgentTrust.Change? = null
+                store.updateSettings { current ->
+                    val ch = AgentTrust.applyAgentRevoke(current, signer, agentId)
+                    change = ch
+                    ch.settings ?: current
+                }
+                if (change?.settings == null) return fail(change?.error ?: "agent_revoke refused")
                 JsonObject().apply {
                     addProperty("revoked", true)
                     addProperty("revokedAgent", agentId)

@@ -118,13 +118,24 @@ data class AgtSettings(
 class AgtStore(context: Context) {
     private val gson = Gson()
     private val dir = File(context.filesDir, "agt").apply { mkdirs() }
+    companion object {
+        /** One lock for settings.json across every AgtStore instance
+         * in the process: the runtime, the job engine, the Firebase
+         * leg and the messaging service each hold their own store,
+         * so an instance monitor cannot serialize them against each
+         * other. All settings reads, writes and atomic updates take
+         * this lock. */
+        private val SETTINGS_LOCK = Any()
+    }
+
     private val settingsFile = File(dir, "settings.json")
     private val deploymentsFile = File(dir, "deployments.json")
     private val processesFile = File(dir, "processes.json")
     private val jobsFile = File(dir, "jobs.json")
 
-    @Synchronized
-    fun loadSettings(): AgtSettings {
+    fun loadSettings(): AgtSettings = synchronized(SETTINGS_LOCK) { loadSettingsLocked() }
+
+    private fun loadSettingsLocked(): AgtSettings {
         if (!settingsFile.exists()) return AgtSettings()
         return try {
             val raw = gson.fromJson(settingsFile.readText(), AgtSettings::class.java)
@@ -143,13 +154,37 @@ class AgtStore(context: Context) {
         }
     }
 
-    @Synchronized
     fun saveSettings(s: AgtSettings) {
+        synchronized(SETTINGS_LOCK) { saveSettingsLocked(s) }
+    }
+
+    private fun saveSettingsLocked(s: AgtSettings) {
         // Every write passes through the trust sync, so no caller
         // can persist a settings copy whose agents list and legacy
         // phoenixPublicKey disagree about the main agent's key.
         settingsFile.writeText(gson.toJson(com.novainc.agt.agent.AgentTrust.synced(s)))
     }
+
+    /**
+     * Apply one change to the settings atomically: load, transform
+     * and save under the one process-wide settings lock, so two
+     * writers on different threads can never lose each other's
+     * change. Every load-modify-save of settings must go through
+     * here: a bare loadSettings + copy + saveSettings sequence is
+     * a lost-update race (proven on a phone 2026-11-16: an
+     * agent_add saved by the job engine vanished when the Firebase
+     * leg's proven-token save, loaded moments earlier, landed
+     * after it; the revoke that followed read "no such agent").
+     * A transform that returns its input unchanged writes nothing.
+     * Returns the settings as persisted (post-sync).
+     */
+    fun updateSettings(transform: (AgtSettings) -> AgtSettings): AgtSettings =
+        synchronized(SETTINGS_LOCK) {
+            val current = loadSettingsLocked()
+            val updated = transform(current)
+            if (updated !== current) saveSettingsLocked(updated)
+            com.novainc.agt.agent.AgentTrust.synced(updated)
+        }
 
     @Synchronized
     fun loadDeployments(): MutableList<Deployment> {
