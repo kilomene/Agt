@@ -51,13 +51,17 @@ class Proot(private val context: Context, private val store: AgtStore) {
      * symlinks as empty regular files: the paths existed, so the old
      * existence-only check called the tree ready, but bash could not
      * start because its loader chain ran through those dead files.
-     * The shipped rootfs also lacks /lib/ld-linux-aarch64.so.1, the
-     * interpreter path every ELF in the tree requests (the loader
-     * itself lives under /usr/lib); install() creates that link, and
-     * a tree without it resolving to the real loader binary is not
-     * installed, whatever the settings flag says. */
+     * The shipped rootfs tarball also omits the /lib symlink every
+     * Debian merged-usr tree carries. Without it, the interpreter
+     * path every ELF requests (/lib/ld-linux-aarch64.so.1) and every
+     * /lib/aarch64-linux-gnu/* entry in ld.so.cache resolve into a
+     * void and no guest program can start; install() creates /lib
+     * as a symlink to usr/lib, and a tree whose /lib is not that
+     * symlink (older installs hold a real directory there instead)
+     * is not installed, whatever the settings flag says. */
     fun treeIntact(): Boolean {
         if (!isSymlink(File(rootfsDir, "bin"))) return false
+        if (!isSymlink(File(rootfsDir, "lib"))) return false
         if (!isSymlink(File(rootfsDir, "usr/bin/python3"))) return false
         if (File(rootfsDir, "usr/bin/bash").length() < 100_000) return false
         if (!File(rootfsDir, "usr/bin/node").exists()) return false
@@ -85,9 +89,45 @@ class Proot(private val context: Context, private val store: AgtStore) {
     /** Prove the guest actually runs: the one check that cannot
      * lie. Existence, sizes and permission bits all said "ready"
      * through shipped builds whose bash could not start at all;
-     * an answered echo can only come from a working guest. */
+     * an answered echo can only come from a working guest. PRoot
+     * runs verbose here so a guest that cannot start explains
+     * itself in the result: the v1.6.4 field failure exited with
+     * no output at all, and a silent failure cannot be diagnosed
+     * from the phone's own telemetry. */
     fun selfTest(timeoutSec: Long = 30): RunResult =
-        runOneShot("echo AGT_LINUX_OK", timeoutSec = timeoutSec)
+        runOneShot(
+            "echo AGT_LINUX_OK",
+            env = mapOf("PROOT_VERBOSE" to "2"),
+            timeoutSec = timeoutSec
+        )
+
+    /** The merged-usr layout repair: /lib as a symlink to usr/lib.
+     * Idempotent. A /lib that is already the right symlink is left
+     * alone; anything else there (a real directory holding only the
+     * old installer's loader link, a wrong link, nothing) is
+     * replaced. The usr/lib side of the tree carries everything the
+     * link exposes, including ld-linux-aarch64.so.1 itself. */
+    private fun ensureLibSymlink() {
+        val lib = File(rootfsDir, "lib")
+        if (isSymlink(lib)) {
+            try {
+                if (android.system.Os.readlink(lib.path) == "usr/lib") return
+            } catch (e: Exception) {
+                // Fall through and recreate the link.
+            }
+        }
+        removePath(lib)
+        android.system.Os.symlink("usr/lib", lib.path)
+    }
+
+    /** Repair the layout of a tree extracted by an older build, in
+     * place, without re-extracting 100 MB. Called at service start
+     * before anything consults isInstalled(), so an upgraded phone
+     * heals its existing tree on the first launch. */
+    fun repairLayout() {
+        if (!rootfsDir.exists()) return
+        ensureLibSymlink()
+    }
 
     /**
      * First-run install. Downloads the rootfs (about 100 MB, one time),
@@ -135,19 +175,16 @@ class Proot(private val context: Context, private val store: AgtStore) {
                     parentFile?.mkdirs()
                     writeText("APT::Sandbox::User \"root\";\n")
                 }
-                // The shipped rootfs has no /lib/ld-linux-aarch64.so.1,
-                // the interpreter every ELF in the tree names in its
-                // header; the loader binary sits under /usr/lib. Link
-                // the expected path to it, or no guest program, bash
-                // included, can ever start (execve reports a plain
-                // "No such file or directory" for the program itself).
-                val loaderLink = File(rootfsDir, "lib/ld-linux-aarch64.so.1")
-                loaderLink.parentFile?.mkdirs()
-                removePath(loaderLink)
-                android.system.Os.symlink(
-                    "../usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1",
-                    loaderLink.path
-                )
+                // The merged-usr layout: /lib must be a symlink to
+                // usr/lib, the layout Debian ships and every path in
+                // the tree assumes. The rootfs tarball omits that
+                // symlink, and creating /lib as a real directory
+                // holding only a loader link (the previous approach)
+                // leaves the interpreter path half-fixed while every
+                // /lib/aarch64-linux-gnu/* entry in ld.so.cache still
+                // points into a void, so the loader cannot find libc
+                // and no guest program, bash included, can start.
+                ensureLibSymlink()
                 if (!treeIntact()) {
                     return@withContext Result.failure(
                         IllegalStateException("Linux tree failed its integrity check after extraction")

@@ -160,7 +160,8 @@ class AgtRuntime private constructor(private val context: Context) {
                 _linuxDetail.value = if (ok) {
                     "guest shell answered AGT_LINUX_OK"
                 } else {
-                    (r.stderr.ifBlank { r.stdout }).trim().take(160)
+                    val out = (r.stderr.ifBlank { r.stdout }).trim()
+                    ("exit ${r.exitCode}: $out").takeLast(160)
                 }
             } catch (e: Exception) {
                 _linuxConsoleOk.value = false
@@ -269,6 +270,11 @@ class AgtRuntime private constructor(private val context: Context) {
     /** Start everything the host needs: supervisor restore, legs, jobs. */
     fun startAll() {
         wireAlerts()
+        // Heal a rootfs extracted by an older build before anything
+        // consults isInstalled(): a real /lib directory in place of
+        // the merged-usr symlink leaves the guest loader unable to
+        // find any library, and every guest process dies at start.
+        try { proot.repairLayout() } catch (e: Exception) { }
         supervisor.restoreAll()
         // The tunnel token is baked into the build from the CI secret.
         // No Settings entry exists and none is needed.
