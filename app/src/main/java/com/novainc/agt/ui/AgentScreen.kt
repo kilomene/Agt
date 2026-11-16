@@ -34,6 +34,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.novainc.agt.agent.AgentTrust
+import com.novainc.agt.core.AgentKey
 import com.novainc.agt.core.AgtRuntime
 import com.novainc.agt.core.AgtService
 import com.novainc.agt.core.JobFeedEntry
@@ -43,8 +45,12 @@ import kotlinx.coroutines.delay
  * The Agent screen, as designed: Phoenix, live. The channel is
  * outbound only, every job is signed and verified, the scopes say
  * exactly what Phoenix may do, and the job feed shows real signed
- * work as it lands. The pairing code and device key live in Settings;
- * pairing is optional because the Phoenix key is baked into the build.
+ * work as it lands, attributed to the agent that sent it. The
+ * trusted agents card below the scopes lists every admitted agent:
+ * Phoenix as the main agent, plus each agent the owner has let in,
+ * each revocable from here except the main agent. The pairing code
+ * and device key live in Settings; pairing is optional because the
+ * Phoenix key is baked into the build.
  */
 @Composable
 fun AgentScreen(onOpenConsole: () -> Unit, onSettings: () -> Unit) {
@@ -53,13 +59,22 @@ fun AgentScreen(onOpenConsole: () -> Unit, onSettings: () -> Unit) {
     var jobs by remember { mutableStateOf<List<JobFeedEntry>>(emptyList()) }
     var paired by remember { mutableStateOf(false) }
     var expanded by remember { mutableStateOf(false) }
+    var agents by remember { mutableStateOf<List<AgentKey>>(emptyList()) }
+    var pairCode by remember { mutableStateOf("") }
+    var pairLabel by remember { mutableStateOf("") }
+    var newAgentId by remember { mutableStateOf("") }
+    var mintNote by remember { mutableStateOf("") }
     var nowMs by remember { mutableStateOf(System.currentTimeMillis()) }
     val serviceRunning by AgtService.running.collectAsState()
 
     LaunchedEffect(Unit) {
         while (true) {
             jobs = runtime.store.loadJobs()
-            paired = runtime.store.loadSettings().phoenixPublicKey.isNotEmpty()
+            val settings = runtime.store.loadSettings()
+            paired = settings.phoenixPublicKey.isNotEmpty()
+            agents = AgentTrust.agentsOf(settings)
+            pairCode = AgentTrust.storedPairingCode(settings)
+            pairLabel = AgentTrust.storedPairingAgentId(settings)
             nowMs = System.currentTimeMillis()
             delay(1000)
         }
@@ -148,6 +163,68 @@ fun AgentScreen(onOpenConsole: () -> Unit, onSettings: () -> Unit) {
         AgtCard {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
+                    "TRUSTED AGENTS", color = AgtColors.TextDim, fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold, letterSpacing = 1.sp, modifier = Modifier.weight(1f)
+                )
+                Text("VERIFIED BY KEY", color = AgtColors.TextDim, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            }
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "Phoenix is the main agent. Any other agent here was admitted by you or by " +
+                    "Phoenix, signs with its own key, and every job it sends is stamped with " +
+                    "its name. Revoking an agent ends its access at once; the main agent " +
+                    "cannot be revoked.",
+                color = AgtColors.TextDim, fontSize = 12.5.sp
+            )
+            Spacer(Modifier.height(6.dp))
+            for (agent in agents) {
+                TrustedAgentRow(agent, onRevoke = { runtime.revokeAgent(AgentTrust.storedAgentId(agent)) })
+            }
+            Spacer(Modifier.height(12.dp))
+            AgentDivider()
+            Spacer(Modifier.height(12.dp))
+            Text(
+                "ADMIT ANOTHER AGENT", color = AgtColors.TextDim, fontSize = 11.sp,
+                fontWeight = FontWeight.Bold, letterSpacing = 1.sp
+            )
+            Spacer(Modifier.height(8.dp))
+            AgtField(
+                value = newAgentId,
+                onChange = { newAgentId = it },
+                label = "AGENT ID (NO SPACES)",
+                placeholder = "e.g. scout"
+            )
+            Spacer(Modifier.height(10.dp))
+            GhostButton(
+                "Mint pairing code for this agent",
+                onClick = {
+                    val id = newAgentId.trim()
+                    if (id.isNotEmpty() && id.none { it.isWhitespace() }) {
+                        val code = runtime.mintAgentPairingCode(id)
+                        mintNote = "Code $code admits $id. It replaces any code already showing."
+                        newAgentId = ""
+                    }
+                },
+                modifier = Modifier.fillMaxWidth()
+            )
+            if (mintNote.isNotEmpty()) {
+                Spacer(Modifier.height(8.dp))
+                Text(mintNote, color = AgtColors.GoldSoft, fontSize = 12.5.sp)
+            }
+            if (pairCode.isNotEmpty()) {
+                Spacer(Modifier.height(10.dp))
+                AgentRow("Pairing code", pairCode, AgtColors.GoldSoft)
+                AgentRow(
+                    "Minted for",
+                    if (pairLabel.isEmpty()) "Phoenix (main agent)" else pairLabel,
+                    AgtColors.TextPrimary
+                )
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        AgtCard {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
                     "RECENT JOB ACTIVITY", color = AgtColors.TextDim, fontSize = 11.sp,
                     fontWeight = FontWeight.Bold, letterSpacing = 1.sp, modifier = Modifier.weight(1f)
                 )
@@ -215,6 +292,54 @@ private fun ScopeRow(label: String) {
 }
 
 @Composable
+private fun TrustedAgentRow(agent: AgentKey, onRevoke: () -> Unit) {
+    val agentId = AgentTrust.storedAgentId(agent)
+    val isMain = AgentTrust.storedRole(agent) == AgentKey.ROLE_MAIN
+    val keyPreview = AgentTrust.storedPublicKey(agent).take(16)
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(40.dp)
+                .clip(RoundedCornerShape(11.dp))
+                .background(AgtColors.SurfaceHigh)
+                .border(1.dp, AgtColors.Stroke, RoundedCornerShape(11.dp)),
+            contentAlignment = Alignment.Center
+        ) {
+            LineIcon(IconKind.Key, AgtColors.Gold, Modifier.size(19.dp))
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    agentId, color = AgtColors.TextPrimary,
+                    fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    if (isMain) "MAIN" else "AGENT",
+                    color = if (isMain) AgtColors.Gold else AgtColors.TextDim,
+                    fontSize = 11.sp, fontWeight = FontWeight.Bold
+                )
+            }
+            Text(
+                "Ed25519 · $keyPreview...",
+                color = AgtColors.TextDim, fontSize = 12.sp, fontFamily = FontFamily.Monospace
+            )
+        }
+        if (!isMain) {
+            Text(
+                "REVOKE",
+                color = AgtColors.Danger, fontSize = 11.5.sp, fontWeight = FontWeight.Bold,
+                modifier = Modifier.clickable { onRevoke() }
+            )
+        }
+    }
+}
+
+@Composable
 private fun JobRow(job: JobFeedEntry, nowMs: Long) {
     val icon = when (job.kind) {
         "deploy" -> IconKind.Download
@@ -224,10 +349,13 @@ private fun JobRow(job: JobFeedEntry, nowMs: Long) {
         "logs" -> IconKind.Console
         "remove" -> IconKind.Close
         "pair" -> IconKind.Key
+        "agent_add" -> IconKind.Key
+        "agent_revoke" -> IconKind.Close
         "firebase_token" -> IconKind.Flame
         else -> IconKind.Bolt
     }
     val done = job.status == "done"
+    val agent = AgentTrust.feedAgentOf(job)
     Row(
         modifier = Modifier.fillMaxWidth().padding(vertical = 7.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -249,7 +377,11 @@ private fun JobRow(job: JobFeedEntry, nowMs: Long) {
                 color = AgtColors.TextPrimary, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold
             )
             Text(
-                "Signed job · ${if (done) "completed" else "failed"}",
+                if (agent.isEmpty()) {
+                    "Signed job · ${if (done) "completed" else "failed"}"
+                } else {
+                    "Signed job · by $agent · ${if (done) "completed" else "failed"}"
+                },
                 color = AgtColors.TextDim, fontSize = 12.sp
             )
         }

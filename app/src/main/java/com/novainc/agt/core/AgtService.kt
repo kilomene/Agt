@@ -288,7 +288,7 @@ class AgtService : Service() {
         var userStopped: Boolean = false
 
         /**
-         * Arm the next watchdog alarm, 5 minutes out, exact where the
+         * Arm the next watchdog alarm, 2 minutes out, exact where the
          * platform allows it. RestartReceiver re-arms on every firing,
          * so the chain survives process death; a deliberate stop ends
          * it because the receiver checks userStopped first.

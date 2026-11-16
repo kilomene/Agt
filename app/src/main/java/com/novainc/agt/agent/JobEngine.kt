@@ -3,6 +3,8 @@ package com.novainc.agt.agent
 import com.google.gson.Gson
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
+import com.novainc.agt.core.AgentKey
+import com.novainc.agt.core.AgtSettings
 import com.novainc.agt.core.AgtStore
 import com.novainc.agt.core.NotifyKind
 import com.novainc.agt.core.JobFeedEntry
@@ -21,10 +23,13 @@ import java.util.UUID
 
 /**
  * The agent connection: Phoenix writes signed jobs to Supabase, the phone
- * polls them, verifies the Ed25519 signature against the paired Phoenix
- * public key, executes, and writes the result back. No inbound port, no
- * SSH: everything rides the outbound Supabase channel. A job with a bad
+ * polls them, verifies the Ed25519 signature against the trusted agents
+ * list (the main agent first, then each admitted agent's own key),
+ * executes, and writes the result back. No inbound port, no SSH:
+ * everything rides the outbound Supabase channel. A job with a bad
  * or missing signature is refused and marked failed, never run.
+ * Every verified job is attributed to the agent whose key signed it:
+ * the agentId lands on the job feed entry and in the result JSON.
  */
 class JobEngine(
     private val store: AgtStore,
@@ -95,27 +100,49 @@ class JobEngine(
         try {
             supabase.claimJob(jobId)
             val settings = store.loadSettings()
-            // Trust root: the key stored by pairing when there is one,
-            // otherwise the Phoenix public key baked into the build.
-            // Setup jobs (firebase_token) therefore verify on a fresh
-            // install with no pairing step in the way.
-            val trustedKey = settings.phoenixPublicKey.ifEmpty {
-                com.novainc.agt.core.AgtConfig.PHOENIX_PUBLIC_KEY
-            }
+            // Trust root: the trusted agents list. Verification tries
+            // the main agent's key first (the paired key when there is
+            // one, otherwise the Phoenix key baked into the build, so
+            // setup jobs like firebase_token verify on a fresh install
+            // with no pairing step in the way), then each admitted
+            // agent's key. The entry that verifies is the job's
+            // signer, and its agentId is the attribution stamped on
+            // the feed entry and into the result.
+            var feedAgent = ""
             val result = when {
-                kind == "pair" -> handlePair(payload, settings.pairingCode)
+                kind == "pair" -> {
+                    val pairResult = handlePair(payload, settings)
+                    feedAgent = pairResult.get("agent")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                    pairResult
+                }
                 signature.isNullOrEmpty() -> fail("missing signature")
-                !verify(payload, signature, trustedKey) -> fail("signature does not verify")
-                else -> execute(kind, payload)
+                else -> {
+                    val matched = AgentTrust.verifySigner(settings, payload, signature)
+                    if (matched == null) {
+                        fail("signature does not verify")
+                    } else {
+                        feedAgent = AgentTrust.agentIdOf(matched)
+                        AgentTrust.stampAgent(execute(kind, payload, matched), matched)
+                    }
+                }
             }
             supabase.completeJob(jobId, result)
-            store.addJob(JobFeedEntry(UUID.randomUUID().toString(), kind, "done", summarize(kind, result)))
+            store.addJob(
+                JobFeedEntry(
+                    UUID.randomUUID().toString(), kind, "done",
+                    summarize(kind, result), agent = feedAgent
+                )
+            )
             val err = result.get("error")?.takeIf { !it.isJsonNull }?.asString
             when {
                 err != null && kind == "pair" -> onJobEvent?.invoke(
                     NotifyKind.SECURITY, "Pairing failed", err)
                 err != null -> onJobEvent?.invoke(
                     NotifyKind.ALERT, "Job failed: $kind", err)
+                kind == "pair" && feedAgent.isNotEmpty() && feedAgent != AgentTrust.MAIN_AGENT_ID ->
+                    onJobEvent?.invoke(
+                        NotifyKind.SECURITY, "Agent paired",
+                        "$feedAgent is paired with this phone.")
                 kind == "pair" -> onJobEvent?.invoke(
                     NotifyKind.SECURITY, "Phone paired", "Phoenix is paired with this phone.")
                 else -> onJobEvent?.invoke(
@@ -134,30 +161,57 @@ class JobEngine(
     private fun fail(message: String): JsonObject =
         JsonObject().apply { addProperty("error", message) }
 
-    private fun verify(payload: JsonObject, signatureB64: String, publicKeyB64: String): Boolean {
-        val public = DeviceIdentity.publicKeyBytesFromBase64(publicKeyB64) ?: return false
-        val sig = DeviceIdentity.signatureFromBase64(signatureB64) ?: return false
-        return DeviceIdentity.verify(public, canonicalJson(payload).toByteArray(Charsets.UTF_8), sig)
-    }
-
-    private fun handlePair(payload: JsonObject, expectedCode: String): JsonObject {
+    /**
+     * Pairing, two doors over the one outstanding code. A code the
+     * owner minted for an agentId (on the Agent screen) admits that
+     * agent: the presented key becomes its AGENT entry and the main
+     * agent's trust is untouched. A code with no label, or a pair
+     * payload with an empty agentId, keeps the original bootstrap
+     * behaviour: the presented key replaces the main agent's key.
+     * A payload that names a different agentId than the code's label
+     * is refused, so a code minted for one agent cannot be spent by
+     * another. The presented key rides in the payload's
+     * phoenixPublicKey field, as it always has; publicKey is
+     * accepted as the same value under the agent-neutral name.
+     */
+    private fun handlePair(payload: JsonObject, settings: AgtSettings): JsonObject {
         val code = payload.get("code")?.asString ?: ""
-        val key = payload.get("phoenixPublicKey")?.asString ?: ""
+        val key = payload.get("phoenixPublicKey")?.asString
+            ?: payload.get("publicKey")?.asString ?: ""
+        val expectedCode = AgentTrust.storedPairingCode(settings)
         if (expectedCode.isEmpty() || code != expectedCode) {
             return fail("pairing code does not match")
         }
         if (DeviceIdentity.publicKeyBytesFromBase64(key) == null) {
             return fail("bad Phoenix public key")
         }
-        val settings = store.loadSettings()
-        store.saveSettings(settings.copy(phoenixPublicKey = key, pairingCode = ""))
-        return JsonObject().apply {
-            addProperty("paired", true)
-            addProperty("devicePublicKey", identity.publicKeyBase64())
+        val labelled = AgentTrust.storedPairingAgentId(settings)
+        val named = payload.get("agentId")?.asString ?: ""
+        if (labelled.isNotEmpty() && named.isNotEmpty() && named != labelled) {
+            return fail("pairing code is for a different agent")
+        }
+        val agentId = labelled.ifEmpty { named }
+        val current = store.loadSettings()
+        return if (agentId.isEmpty()) {
+            store.saveSettings(AgentTrust.pairAsMain(current, key))
+            JsonObject().apply {
+                addProperty("paired", true)
+                addProperty("agent", AgentTrust.MAIN_AGENT_ID)
+                addProperty("devicePublicKey", identity.publicKeyBase64())
+            }
+        } else {
+            val change = AgentTrust.pairAsAgent(current, agentId, key)
+            val updated = change.settings ?: return fail(change.error ?: "pairing refused")
+            store.saveSettings(updated)
+            JsonObject().apply {
+                addProperty("paired", true)
+                addProperty("agent", agentId)
+                addProperty("devicePublicKey", identity.publicKeyBase64())
+            }
         }
     }
 
-    private suspend fun execute(kind: String, payload: JsonObject): JsonObject {
+    private suspend fun execute(kind: String, payload: JsonObject, signer: AgentKey): JsonObject {
         return when (kind) {
             "command" -> {
                 val command = payload.get("command")?.asString ?: ""
@@ -230,6 +284,32 @@ class JobEngine(
                 onFirebaseTokenSaved?.invoke()
                 JsonObject().apply { addProperty("saved", true) }
             }
+            "agent_add" -> {
+                // Admitting a new trusted agent is the main agent's
+                // act alone: AgentTrust refuses any other signer,
+                // so an admitted agent can never admit another.
+                val agentId = payload.get("agentId")?.asString ?: return fail("agentId missing")
+                val key = payload.get("publicKey")?.asString ?: return fail("publicKey missing")
+                val change = AgentTrust.applyAgentAdd(store.loadSettings(), signer, agentId, key)
+                val updated = change.settings ?: return fail(change.error ?: "agent_add refused")
+                store.saveSettings(updated)
+                JsonObject().apply {
+                    addProperty("added", true)
+                    addProperty("addedAgent", agentId)
+                }
+            }
+            "agent_revoke" -> {
+                // Same gate as agent_add, and the main agent's own
+                // entry is unrevocable inside AgentTrust.
+                val agentId = payload.get("agentId")?.asString ?: return fail("agentId missing")
+                val change = AgentTrust.applyAgentRevoke(store.loadSettings(), signer, agentId)
+                val updated = change.settings ?: return fail(change.error ?: "agent_revoke refused")
+                store.saveSettings(updated)
+                JsonObject().apply {
+                    addProperty("revoked", true)
+                    addProperty("revokedAgent", agentId)
+                }
+            }
             else -> fail("unknown job kind $kind")
         }
     }
@@ -244,6 +324,8 @@ class JobEngine(
             "logs" -> "logs pulled"
             "remove" -> "removed"
             "firebase_token" -> "token saved"
+            "agent_add" -> "agent added"
+            "agent_revoke" -> "agent revoked"
             else -> kind
         }
     }

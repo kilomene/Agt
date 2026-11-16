@@ -9,7 +9,7 @@ import android.content.Intent
  *  - Comeback: AgtService schedules a one-second alarm on its way down
  *    (task removed or destroyed) and this receiver restarts the host,
  *    unless the owner deliberately stopped it.
- *  - Watchdog chain: every 5 minutes the alarm fires again; if the
+ *  - Watchdog chain: every 2 minutes the alarm fires again; if the
  *    whole process died silently, the service is restarted here, and
  *    the next watchdog alarm is armed before returning.
  * Combined with START_STICKY and the boot receiver, the host has four

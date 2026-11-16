@@ -632,7 +632,7 @@ private fun HomeScreen(onOpenConsole: () -> Unit, onSettings: () -> Unit, onOpen
             )
             ResilienceRow(
                 "Watchdog",
-                "Alarm chain checks the host every 5 minutes and revives it"
+                "Alarm chain checks the host every 2 minutes and revives it"
             )
         }
 

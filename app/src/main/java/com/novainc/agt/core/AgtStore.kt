@@ -51,16 +51,64 @@ data class JobFeedEntry(
     val kind: String,
     val status: String,
     val summary: String,
-    val at: Long = System.currentTimeMillis()
+    val at: Long = System.currentTimeMillis(),
+    // The trusted agent whose verified signature sent this job
+    // (multi-agent trust: "phoenix" for the main agent, the fleet
+    // agent's id for an agent-signed job). Empty on entries written
+    // before attribution existed and on jobs that never verified;
+    // every read goes through AgentTrust.feedAgentOf for the same
+    // Gson reason as DeploymentEngine.storedSlug.
+    val agent: String = ""
 )
+
+/**
+ * One trusted signing key on this host. The MAIN entry is the main
+ * agent (Phoenix); AGENT entries are the other agents the owner has
+ * admitted, each with its own Ed25519 key, each able to deploy and
+ * run jobs that are attributed to it, and each revocable without
+ * touching the main agent's trust.
+ */
+data class AgentKey(
+    val agentId: String = "",
+    val publicKey: String = "",
+    val role: String = ROLE_AGENT,
+    val addedAt: Long = 0L
+) {
+    companion object {
+        const val ROLE_MAIN = "MAIN"
+        const val ROLE_AGENT = "AGENT"
+    }
+}
 
 data class AgtSettings(
     val deviceId: String = "",
     val devicePublicKey: String = "",
     val phoenixPublicKey: String = "",
+    // The trusted agents admitted to this host. Null in settings
+    // files written before multi-agent trust existed: Gson does not
+    // apply the Kotlin default on those files, so the field is
+    // declared nullable and every read goes through
+    // AgentTrust.storedAgents, which also performs the first-load
+    // migration of the legacy phoenixPublicKey into a MAIN entry.
+    // The phoenixPublicKey field itself stays, kept in sync with
+    // the MAIN entry by AgentTrust.synced on every save.
+    val agents: List<AgentKey>? = null,
     val pairingCode: String = "",
+    // The agentId the outstanding pairing code was minted for, or
+    // empty when the code is a main-agent (Phoenix) bootstrap code.
+    // One outstanding code at a time, as before: minting a code for
+    // an agent replaces any code already showing.
+    val pairingAgentId: String = "",
     val tunnelToken: String = "",
     val firebaseToken: String = "",
+    // The last firebaseToken value that completed a full presence
+    // cycle, persisted by FirebaseLeg the moment it is proven. The
+    // in-memory proof alone died with the process, so a restart
+    // after a network drop read the key as unproven and the
+    // firebaseKeySet flag latched false; the persisted copy lets
+    // hasUsableKey() stay honest across restarts. Empty until a
+    // token first proves itself.
+    val provenFirebaseToken: String = "",
     val supabaseAnonKey: String = "",
     val fcmToken: String = "",
     val rootfsVersion: String = "",
@@ -79,7 +127,17 @@ class AgtStore(context: Context) {
     fun loadSettings(): AgtSettings {
         if (!settingsFile.exists()) return AgtSettings()
         return try {
-            gson.fromJson(settingsFile.readText(), AgtSettings::class.java) ?: AgtSettings()
+            val raw = gson.fromJson(settingsFile.readText(), AgtSettings::class.java)
+                ?: return AgtSettings()
+            // First-load migration for multi-agent trust: a legacy
+            // phoenixPublicKey becomes the MAIN agent entry, and the
+            // two views of the main key are kept in sync. Persisted
+            // once, here, so the file on disk carries the agents
+            // list from then on; later loads find it already synced
+            // and write nothing.
+            val synced = com.novainc.agt.agent.AgentTrust.synced(raw)
+            if (synced != raw) saveSettings(synced)
+            synced
         } catch (e: Exception) {
             AgtSettings()
         }
@@ -87,7 +145,10 @@ class AgtStore(context: Context) {
 
     @Synchronized
     fun saveSettings(s: AgtSettings) {
-        settingsFile.writeText(gson.toJson(s))
+        // Every write passes through the trust sync, so no caller
+        // can persist a settings copy whose agents list and legacy
+        // phoenixPublicKey disagree about the main agent's key.
+        settingsFile.writeText(gson.toJson(com.novainc.agt.agent.AgentTrust.synced(s)))
     }
 
     @Synchronized

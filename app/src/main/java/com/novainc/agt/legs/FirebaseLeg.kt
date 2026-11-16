@@ -77,6 +77,42 @@ class FirebaseLeg(private val store: AgtStore) {
     private var startTelemetry: (() -> JsonObject)? = null
     @Volatile private var lastCustomToken: String = ""
 
+    /** The last custom token that completed a full presence cycle.
+     * Once a token has connected successfully it is proven usable;
+     * later transient state changes (a failed cycle, or the restart
+     * that every fresh key triggers) must not un-prove it. */
+    @Volatile private var provenCustomToken: String = ""
+
+    /** Consecutive failed cycles in the current loop. A proven key
+     * tolerates the first failures without flipping the leg to
+     * ERROR: one network drop must not read as a dead key. Reset to
+     * zero by every successful cycle. */
+    @Volatile private var consecutiveFailures: Int = 0
+
+    /** Record a token as proven: in memory for this process, and
+     * persisted in settings so the proof survives a restart (the
+     * process can die mid-outage, and on the way back the flag must
+     * still know this key worked). Persisted only when it changes,
+     * so the presence cadence does not rewrite settings forever. */
+    private fun markProven(custom: String) {
+        provenCustomToken = custom
+        try {
+            val settings = store.loadSettings()
+            if (settings.provenFirebaseToken != custom) {
+                store.saveSettings(settings.copy(provenFirebaseToken = custom))
+            }
+        } catch (e: Exception) {
+            // Persistence is a hardening copy; the in-memory proof
+            // above still holds for this process.
+        }
+    }
+
+    /** Whether the current custom token has a proof anywhere:
+     * in memory, persisted from an earlier process, or connected
+     * right now. */
+    private fun hasProof(custom: String, persistedProven: String): Boolean =
+        _state.value == State.CONNECTED || provenCustomToken == custom || persistedProven == custom
+
     /** The stored token is a Firebase custom token minted by Phoenix.
      * RTDB REST wants an ID token, so exchange the custom token at the
      * Identity Toolkit endpoint (cached for 50 minutes). If the exchange
@@ -111,7 +147,11 @@ class FirebaseLeg(private val store: AgtStore) {
         startScope = scope
         startDeviceId = deviceId
         startTelemetry = telemetry
-        stop()
+        // Restarting the loop must not blank the state: every fresh
+        // key delivery lands here via refreshNow(), and a restart
+        // that passes through OFF is exactly what made the
+        // firebaseKeySet flag flap on deliveries that worked.
+        cancelLoop()
         loop = scope.launch(Dispatchers.IO) {
             var cycle = 0
             while (isActive) {
@@ -137,18 +177,42 @@ class FirebaseLeg(private val store: AgtStore) {
                     // checked every cycle (about every 2s), so a ring
                     // wakes the job engine near-instantly instead of
                     // waiting out the presence interval.
-                    if (cycle % 5 == 0) {
+                    val presenceCycle = cycle % 5 == 0
+                    if (presenceCycle) {
                         val t0 = System.currentTimeMillis()
                         writePresence(deviceId, token, telemetry())
                         _latencyMs.value = System.currentTimeMillis() - t0
+                        // The write landed: the key is proven right
+                        // now, before the doorbell and alert reads
+                        // below get any chance to fail the cycle.
+                        markProven(custom)
                     }
                     cycle++
-                    checkWake(deviceId, token)
-                    checkAlert(deviceId, token)
+                    // The doorbell and alert reads are best-effort
+                    // extras on top of the presence proof: a failed
+                    // read must never fail the cycle, block the
+                    // proof, or flip the state.
+                    try { checkWake(deviceId, token) } catch (e: Exception) { }
+                    try { checkAlert(deviceId, token) } catch (e: Exception) { }
+                    if (!presenceCycle) markProven(custom)
+                    consecutiveFailures = 0
                     _state.value = State.CONNECTED
                     _detail.value = "Presence live, doorbell listening"
                 } catch (e: Exception) {
-                    _state.value = State.ERROR
+                    consecutiveFailures++
+                    val persisted = try {
+                        store.loadSettings().provenFirebaseToken
+                    } catch (loadError: Exception) {
+                        ""
+                    }
+                    val proven = hasProof(custom, persisted)
+                    if (shouldReportError(consecutiveFailures, proven)) {
+                        _state.value = State.ERROR
+                    }
+                    // Below the tolerance threshold with a proven
+                    // key, the state stays CONNECTED: the error is
+                    // recorded in the detail, not promoted to a
+                    // dead-leg reading.
                     _detail.value = e.message ?: "Firebase error"
                 }
                 delay(2_000)
@@ -156,9 +220,16 @@ class FirebaseLeg(private val store: AgtStore) {
         }
     }
 
-    fun stop() {
+    /** Cancel the loop job only, leaving state and detail exactly
+     * as they are. start() uses this on every restart; stop() is
+     * the deliberate teardown below. */
+    private fun cancelLoop() {
         loop?.cancel()
         loop = null
+    }
+
+    fun stop() {
+        cancelLoop()
         _state.value = State.OFF
         _detail.value = ""
     }
@@ -173,17 +244,31 @@ class FirebaseLeg(private val store: AgtStore) {
         start(scope, startDeviceId, telemetry)
     }
 
-    /** True only while the leg holds a key that is actually usable:
-     * a token is stored, its own expiry has not passed, and the last
-     * presence cycle connected. Telemetry reports this as
+    /** True while the leg holds a key that is actually usable:
+     * a token is stored, its own expiry has not passed, and the
+     * token has proven itself by completing a full presence cycle
+     * (or is connected right now). Telemetry reports this as
      * firebaseKeySet, so Phoenix's keeper mints the moment it turns
-     * false instead of trusting that a token string merely exists. */
+     * false instead of trusting that a token string merely exists.
+     *
+     * The proof is deliberately sticky. An earlier version also
+     * required the state at the sampling instant to be CONNECTED,
+     * which made the flag flap false on any single failed cycle and
+     * on every key delivery (each fresh key restarts the leg, and
+     * the restart passes through OFF). The keeper read those flaps
+     * as a missing key and re-minted against a key that worked,
+     * and phase gates failed on a two-second network hiccup. A
+     * token that has never completed a cycle still reads false, so
+     * a stored-but-dead key is still caught. The proof is read from
+     * memory and from the persisted copy in settings, so it also
+     * survives the process dying mid-outage and restarting. */
     fun hasUsableKey(): Boolean {
-        val custom = store.loadSettings().firebaseToken
+        val settings = store.loadSettings()
+        val custom = settings.firebaseToken
         if (custom.isBlank()) return false
         val expiry = tokenExpiryMs(custom)
         if (expiry != null && System.currentTimeMillis() > expiry) return false
-        return _state.value == State.CONNECTED
+        return hasProof(custom, settings.provenFirebaseToken)
     }
 
     private fun writePresence(deviceId: String, token: String, telemetry: JsonObject) {
@@ -238,6 +323,14 @@ class FirebaseLeg(private val store: AgtStore) {
     data class Alert(val at: Long, val title: String, val message: String, val kind: String = "alert")
 
     companion object {
+        /** The failure-tolerance decision for one failed cycle:
+         * report ERROR only once failures reach the threshold, or
+         * immediately when the current token has no proof at all
+         * (a never-proven key failing is a dead key, not a hiccup).
+         * Pure and unit tested. */
+        fun shouldReportError(failures: Int, hasProven: Boolean): Boolean =
+            failures >= 3 || !hasProven
+
         /** The expiry instant (epoch millis) carried inside a Firebase
          * custom token, read from its JWT payload without verifying
          * the signature: the leg only needs to know when the key dies,

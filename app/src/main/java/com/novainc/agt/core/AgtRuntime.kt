@@ -116,8 +116,32 @@ class AgtRuntime private constructor(private val context: Context) {
         val settings = store.loadSettings()
         if (settings.pairingCode.isNotEmpty()) return settings.pairingCode
         val code = (100000..999999).random().toString()
-        store.saveSettings(settings.copy(pairingCode = code))
+        // A freshly minted code here is a main-agent bootstrap code:
+        // it carries no agent label.
+        store.saveSettings(settings.copy(pairingCode = code, pairingAgentId = ""))
         return code
+    }
+
+    /** Mint the one outstanding pairing code for one agentId: a
+     * pair job presenting this code plus that agent's public key
+     * adds an AGENT entry for the id, leaving the main agent's key
+     * untouched. Minting replaces any code already outstanding, the
+     * same one-slot rule the pairing code has always had. */
+    fun mintAgentPairingCode(agentId: String): String {
+        val settings = store.loadSettings()
+        val code = (100000..999999).random().toString()
+        store.saveSettings(settings.copy(pairingCode = code, pairingAgentId = agentId.trim()))
+        return code
+    }
+
+    /** Revoke one admitted agent from the phone itself (the Agent
+     * screen's revoke button). The main agent cannot be revoked;
+     * AgentTrust refuses and this returns false. */
+    fun revokeAgent(agentId: String): Boolean {
+        val change = com.novainc.agt.agent.AgentTrust.revokeAgent(store.loadSettings(), agentId)
+        val updated = change.settings ?: return false
+        store.saveSettings(updated)
+        return true
     }
 
     fun telemetryJson(): JsonObject {
@@ -175,47 +199,75 @@ class AgtRuntime private constructor(private val context: Context) {
         }
     }
 
+    /** True while the self-test retry loop is running. The loop is
+     * the difference between a shell that failed one probe at
+     * service start staying dead until the next start, and the
+     * shell raising itself once whatever blocked the probe clears. */
+    @Volatile
+    private var selfTestRetrying: Boolean = false
+
     /** Run the Linux self-test in the background and cache its
      * verdict for telemetry. Async on purpose: service start never
      * waits on it, and a shell that cannot run reports itself
-     * within seconds instead of being discovered by the owner. */
+     * within seconds instead of being discovered by the owner. A
+     * failed verdict is not final: the retry loop below re-runs
+     * the probe every 30 seconds until the shell answers, because
+     * a shell that is not raised is a shell that does not exist,
+     * and nothing else in the app re-asks the question. */
     private fun runLinuxSelfTest() {
         scope.launch {
-            if (!linux.isInstalled()) return@launch
-            try {
-                val d = linux.diagnose()
-                _linuxConsoleOk.value = d.consoleOk
-                // Readiness is this same verdict: the probe
-                // answered. The native shell has no start shapes:
-                // it starts as a process of the app or the
-                // failure is printed in the open.
-                _linuxReady.value = d.consoleOk
-                _linuxLadder.value = d.report
-                _linuxDetail.value = d.detailLine.take(160)
-                // Startup is not finished until the shell itself
-                // is raised. Every road back to life (sticky
-                // restart, the watchdog chain, boot, the comeback
-                // alarm) funnels into startAll and therefore into
-                // this self-test, so a shell that answers its
-                // probe raises its primary shell here, with no
-                // user action: the session takes its place in the
-                // registry under the Console tab's own key
-                // (host-0) and simply lives there, owned by this
-                // runtime. The raise is gated on the service
-                // running, because the shell's keeper lives and
-                // dies with the foreground service: a shell is
-                // never raised into a runtime whose service is
-                // down (a settings-screen install retry can reach
-                // this self-test with the service stopped, and
-                // there the probe verdict is all that runs).
-                if (d.consoleOk && AgtService.running.value) {
-                    try { shellSession("host-0", "/root") } catch (e: Exception) { }
+            runLinuxSelfTestAttempt()
+            if (!_linuxConsoleOk.value && !selfTestRetrying) {
+                selfTestRetrying = true
+                try {
+                    while (!_linuxConsoleOk.value) {
+                        delay(30_000)
+                        runLinuxSelfTestAttempt()
+                    }
+                } finally {
+                    selfTestRetrying = false
                 }
-            } catch (e: Exception) {
-                _linuxConsoleOk.value = false
-                _linuxReady.value = false
-                _linuxDetail.value = (e.message ?: "Linux self-test failed").take(160)
             }
+        }
+    }
+
+    /** One self-test attempt: probe, cache the verdict, and raise
+     * the primary shell on success. */
+    private suspend fun runLinuxSelfTestAttempt() {
+        if (!linux.isInstalled()) return
+        try {
+            val d = linux.diagnose()
+            _linuxConsoleOk.value = d.consoleOk
+            // Readiness is this same verdict: the probe
+            // answered. The native shell has no start shapes:
+            // it starts as a process of the app or the
+            // failure is printed in the open.
+            _linuxReady.value = d.consoleOk
+            _linuxLadder.value = d.report
+            _linuxDetail.value = d.detailLine.take(160)
+            // Startup is not finished until the shell itself
+            // is raised. Every road back to life (sticky
+            // restart, the watchdog chain, boot, the comeback
+            // alarm) funnels into startAll and therefore into
+            // this self-test, so a shell that answers its
+            // probe raises its primary shell here, with no
+            // user action: the session takes its place in the
+            // registry under the Console tab's own key
+            // (host-0) and simply lives there, owned by this
+            // runtime. The raise is gated on the service
+            // running, because the shell's keeper lives and
+            // dies with the foreground service: a shell is
+            // never raised into a runtime whose service is
+            // down (a settings-screen install retry can reach
+            // this self-test with the service stopped, and
+            // there the probe verdict is all that runs).
+            if (d.consoleOk && AgtService.running.value) {
+                try { shellSession("host-0", "/root") } catch (e: Exception) { }
+            }
+        } catch (e: Exception) {
+            _linuxConsoleOk.value = false
+            _linuxReady.value = false
+            _linuxDetail.value = (e.message ?: "Linux self-test failed").take(160)
         }
     }
 
@@ -338,7 +390,7 @@ class AgtRuntime private constructor(private val context: Context) {
     }
 
     /** Quick action: sync to Supabase right now instead of waiting
-     * out the 60 second cycle. */
+     * out the 30 second cycle. */
     fun syncNow() {
         scope.launch {
             try { runSyncCycle() } catch (e: Exception) { }
@@ -388,7 +440,7 @@ class AgtRuntime private constructor(private val context: Context) {
                 } catch (e: Exception) {
                     // Sync failure is not fatal: the next cycle retries.
                 }
-                delay(60_000)
+                delay(30_000)
             }
         }
     }

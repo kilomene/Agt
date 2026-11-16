@@ -2,7 +2,9 @@ package com.novainc.agt
 
 import com.novainc.agt.legs.FirebaseLeg
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.Base64
 
@@ -42,5 +44,28 @@ class FirebaseTokenExpiryTest {
         assertNull(FirebaseLeg.tokenExpiryMs("a.b"))
         assertNull(FirebaseLeg.tokenExpiryMs("a.!!!.c"))
         assertNull(FirebaseLeg.tokenExpiryMs("a.b.c.d"))
+    }
+
+    @Test
+    fun provenKeyToleratesFirstFailures() {
+        // A proven key riding out a network drop: the first two
+        // failed cycles must not report ERROR, or the
+        // firebaseKeySet flag flaps on every hiccup.
+        assertFalse(FirebaseLeg.shouldReportError(failures = 1, hasProven = true))
+        assertFalse(FirebaseLeg.shouldReportError(failures = 2, hasProven = true))
+    }
+
+    @Test
+    fun provenKeyReportsAtThreshold() {
+        assertTrue(FirebaseLeg.shouldReportError(failures = 3, hasProven = true))
+        assertTrue(FirebaseLeg.shouldReportError(failures = 7, hasProven = true))
+    }
+
+    @Test
+    fun unprovenKeyReportsImmediately() {
+        // A key that never completed a cycle failing is a dead
+        // key, not a hiccup: no tolerance.
+        assertTrue(FirebaseLeg.shouldReportError(failures = 1, hasProven = false))
+        assertTrue(FirebaseLeg.shouldReportError(failures = 2, hasProven = false))
     }
 }

@@ -54,6 +54,18 @@ class TunnelLeg(private val context: Context) {
     private var process: Process? = null
     private var watcher: Job? = null
 
+    /** Set by stop(), cleared by start(). The launch-failure retry
+     * checks it before resurrecting anything: a leg the owner (or
+     * stopAll) stopped on purpose stays stopped. */
+    @Volatile
+    private var stopped: Boolean = true
+
+    /** When the current cloudflared process started, so the watcher
+     * can tell a hung start (alive but never registered) from a
+     * slow one. */
+    @Volatile
+    private var procStartMs: Long = 0L
+
     /** The last cloudflared output lines, oldest first. Kept so a
      * failure is diagnosable in the tunnel's own words (and rides
      * telemetry to Phoenix), never just a bare exit code. The
@@ -153,7 +165,11 @@ class TunnelLeg(private val context: Context) {
     }
 
     fun start(scope: CoroutineScope, token: String) {
+        stopped = false
         stop()
+        // stop() sets the stopped flag; this start is live, so
+        // clear it again for the retry guard below.
+        stopped = false
         if (token.isBlank()) {
             _state.value = State.NOT_CONFIGURED
             _detail.value = "This build carries no tunnel token. CI bakes it from the repo secret."
@@ -190,6 +206,7 @@ class TunnelLeg(private val context: Context) {
                 pb.redirectErrorStream(true)
                 val proc = pb.start()
                 process = proc
+                procStartMs = System.currentTimeMillis()
                 val reader = Thread {
                     proc.inputStream.bufferedReader().forEachLine { line ->
                         synchronized(recentLines) {
@@ -210,6 +227,20 @@ class TunnelLeg(private val context: Context) {
                 watcher = scope.launch {
                     while (isActive) {
                         delay(5000)
+                        if (proc.isAlive && _state.value != State.CONNECTED &&
+                            procStartMs > 0L &&
+                            System.currentTimeMillis() - procStartMs > 90_000L
+                        ) {
+                            // Hung start: cloudflared is alive but
+                            // never registered a connection in 90s.
+                            // Kill it and let the next iteration's
+                            // exit branch restart it on the normal
+                            // backoff, instead of watching a zombie
+                            // forever.
+                            _detail.value = "cloudflared alive but never connected in 90s; restarting it"
+                            try { proc.destroy() } catch (e: Exception) { }
+                            continue
+                        }
                         if (proc.isAlive && _state.value == State.CONNECTED) {
                             // Real latency: time a TCP connect to the
                             // Cloudflare edge endpoint cloudflared uses.
@@ -240,11 +271,23 @@ class TunnelLeg(private val context: Context) {
             } catch (e: Exception) {
                 _state.value = State.ERROR
                 _detail.value = e.message ?: "tunnel failed to start"
+                // A launch failure used to be final: the leg sat
+                // in ERROR until something external restarted it.
+                // Retry on the same doubling backoff as the exit
+                // path, forever, unless the leg was stopped on
+                // purpose meanwhile.
+                val waitMs = restartBackoffMs
+                restartBackoffMs = (restartBackoffMs * 2).coerceAtMost(60_000L)
+                scope.launch {
+                    delay(waitMs)
+                    if (!stopped) start(scope, token)
+                }
             }
         }
     }
 
     fun stop() {
+        stopped = true
         watcher?.cancel()
         watcher = null
         try {

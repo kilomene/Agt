@@ -23,6 +23,6 @@ class AgtWatchdogTest {
     @Test
     fun neverDoubleStarts() {
         assertFalse(WatchdogPolicy.shouldRestart(userStopped = false, serviceRunning = true))
-        assertEquals(300_000L, WatchdogPolicy.INTERVAL_MS)
+        assertEquals(120_000L, WatchdogPolicy.INTERVAL_MS)
     }
 }
