@@ -78,9 +78,8 @@ fun ConsoleScreen() {
         else -> "host ${i - deployments.size + 1}"
     }
 
-    fun sessionFor(i: Int): Proot.ShellSession? {
+    fun createSession(i: Int): Proot.ShellSession? {
         if (!linuxReady) return null
-        if (sessions.containsKey(i)) return sessions[i]
         val s = try {
             when {
                 i == 0 || i > deployments.size -> runtime.proot.startShell("/root")
@@ -98,6 +97,28 @@ fun ConsoleScreen() {
         }
         sessions[i] = s
         return s
+    }
+
+    fun sessionFor(i: Int): Proot.ShellSession? {
+        if (!linuxReady) return null
+        if (sessions.containsKey(i)) return sessions[i]
+        return createSession(i)
+    }
+
+    /** Send a line to a tab's shell, restarting the shell first
+     * when it has exited. A dead session's transcript says it
+     * exited; the next command the owner sends starts a fresh
+     * shell instead of vanishing into a dead pipe (the filmed
+     * behaviour: typing and Run disappeared into a blank screen). */
+    fun sendLine(i: Int, line: String) {
+        var s = sessionFor(i)
+        if (s != null && !s.alive) {
+            s.close()
+            sessions.remove(i)
+            s = createSession(i)
+            s?.note("[agt] new shell started\n")
+        }
+        s?.send(line)
     }
 
     DisposableEffect(Unit) {
@@ -247,7 +268,7 @@ fun ConsoleScreen() {
                             modifier = Modifier.weight(1f),
                             keyboardActions = KeyboardActions(
                                 onDone = {
-                                    sessionFor(activeTab)?.send(input)
+                                    sendLine(activeTab, input)
                                     input = ""
                                 }
                             ),
@@ -258,7 +279,7 @@ fun ConsoleScreen() {
                             "Run",
                             color = AgtColors.Gold, fontSize = 13.sp, fontWeight = FontWeight.Bold,
                             modifier = Modifier.clickable {
-                                sessionFor(activeTab)?.send(input)
+                                sendLine(activeTab, input)
                                 input = ""
                             }
                         )

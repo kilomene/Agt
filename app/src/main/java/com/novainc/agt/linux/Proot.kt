@@ -122,7 +122,11 @@ class Proot(private val context: Context, private val store: AgtStore) {
      *       directly: proot and ptrace inside the guest, with no
      *       dynamic loader involved.
      *   R5  the dynamic loader itself as the tracee: whether the
-     *       interpreter file can execute at all under proot here. */
+     *       interpreter file can execute at all under proot here.
+     *   R6  the pty probe: bash run under `script`, which gives it
+     *       a real pseudo-terminal. If this answers, the console
+     *       can become a true terminal like Termux (kernel echo,
+     *       a real prompt, job control) instead of plain pipes. */
     fun diagnoseGuest(): Diagnosis {
         val lines = mutableListOf<String>()
         lines += hashLine()
@@ -165,6 +169,13 @@ class Proot(private val context: Context, private val store: AgtStore) {
             runArgv(
                 prootArgv(fakeRoot = true, tail = listOf("/lib/ld-linux-aarch64.so.1", "--version")),
                 clearEnv = true, env = emptyMap(), timeoutSec = 20
+            )
+        )
+        lines += rungLine(
+            "R6 pty",
+            runOneShot(
+                "printf 'echo AGT_PTY_OK\\n' | script -qec 'bash' /dev/null",
+                timeoutSec = 25
             )
         )
         return Diagnosis(ok1, base, lines.joinToString("\n"))
@@ -717,22 +728,51 @@ class Proot(private val context: Context, private val store: AgtStore) {
                 while (true) {
                     val n = proc.inputStream.read(buf)
                     if (n < 0) break
-                    synchronized(lock) {
-                        output.append(String(buf, 0, n))
-                        if (output.length > 200_000) output.delete(0, output.length - 200_000)
-                    }
+                    append(String(buf, 0, n))
                 }
             } catch (e: Exception) {
                 // process ended
             }
+            // The transcript must say the shell ended, in words. A
+            // silent blank console is what the owner filmed: the
+            // shell had died on arrival and the screen showed
+            // nothing, forever, with no hint anything was wrong.
+            try {
+                val code = proc.waitFor()
+                append("\n[agt] this shell exited (code $code). Send a command to start a new shell.\n")
+            } catch (e: Exception) {
+                // Process state unavailable; the transcript simply ends.
+            }
         }.apply { isDaemon = true; start() }
 
+        private fun append(text: String) {
+            synchronized(lock) {
+                output.append(text)
+                if (output.length > 200_000) output.delete(0, output.length - 200_000)
+            }
+        }
+
+        /** Append text produced by the app itself (a sent command's
+         * echo, a shell restart note) to the transcript. */
+        fun note(text: String) {
+            append(text)
+        }
+
         fun send(line: String) {
+            // Local echo: this shell runs over pipes, not a tty, so
+            // nothing else echoes what was typed. Without this, a
+            // sent command never appears in the transcript at all
+            // (the owner's Termux comparison: in Termux you see your
+            // typing and your command on the console; here both were
+            // invisible). This echo is the app's own, and it must be
+            // removed the day the session gains a real pty, or every
+            // command would print twice.
+            append(line + "\n")
             try {
                 proc.outputStream.write((line + "\n").toByteArray())
                 proc.outputStream.flush()
             } catch (e: Exception) {
-                // process ended
+                // process ended; the reader thread records the exit
             }
         }
 
