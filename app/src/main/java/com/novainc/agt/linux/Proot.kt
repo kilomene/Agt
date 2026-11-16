@@ -54,8 +54,8 @@ class Proot(private val context: Context, private val store: AgtStore) {
      * The shipped rootfs tarball also omits the /lib symlink every
      * Debian merged-usr tree carries. Without it, the interpreter
      * path every ELF requests (/lib/ld-linux-aarch64.so.1) and every
-     * /lib/aarch64-linux-gnu/* entry in ld.so.cache resolve into a
-     * void and no guest program can start; install() creates /lib
+     * library path ld.so.cache stores under /lib/aarch64-linux-gnu
+     * resolve into a void and no guest program can start; install() creates /lib
      * as a symlink to usr/lib, and a tree whose /lib is not that
      * symlink (older installs hold a real directory there instead)
      * is not installed, whatever the settings flag says. */
@@ -181,7 +181,7 @@ class Proot(private val context: Context, private val store: AgtStore) {
                 // symlink, and creating /lib as a real directory
                 // holding only a loader link (the previous approach)
                 // leaves the interpreter path half-fixed while every
-                // /lib/aarch64-linux-gnu/* entry in ld.so.cache still
+                // library path ld.so.cache stores under that tree still
                 // points into a void, so the loader cannot find libc
                 // and no guest program, bash included, can start.
                 ensureLibSymlink()
