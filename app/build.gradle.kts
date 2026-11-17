@@ -20,8 +20,8 @@ android {
         // app (Termux included) targets 28 for this reason.
         // compileSdk stays 34; only the target is pinned.
         targetSdk = 28
-        versionCode = 21
-        versionName = "1.6.13"
+        versionCode = 22
+        versionName = "1.6.14"
         // Client config injected at build time from CI secrets (GitHub
         // repo secrets SUPABASE_ANON_KEY and TUNNEL_TOKEN). Local builds
         // without the env vars build with empty values and the legs
@@ -31,8 +31,38 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    // Permanent signing identity (v1.6.14): CI materializes ONE fixed
+    // keystore from the repo secret AGT_KEYSTORE_B64 and points
+    // AGT_KEYSTORE_FILE / AGT_KEYSTORE_PASSWORD at it, so every build
+    // carries the same certificate and Android accepts each new
+    // version as an UPDATE over the installed one, keeping all app
+    // data. Before this, every CI run generated a throwaway debug
+    // key, Android rejected every in-place update, and the only way
+    // to install the next version was uninstall first, which wiped
+    // pairing, deployments and every stored file. Local builds
+    // without the env vars keep the default debug signing.
+    signingConfigs {
+        if (System.getenv("AGT_KEYSTORE_FILE") != null) {
+            create("stable") {
+                storeFile = file(System.getenv("AGT_KEYSTORE_FILE"))
+                storePassword = System.getenv("AGT_KEYSTORE_PASSWORD")
+                keyAlias = "agt"
+                keyPassword = System.getenv("AGT_KEYSTORE_PASSWORD")
+                storeType = "PKCS12"
+            }
+        }
+    }
+
     buildTypes {
+        debug {
+            if (System.getenv("AGT_KEYSTORE_FILE") != null) {
+                signingConfig = signingConfigs.getByName("stable")
+            }
+        }
         release {
+            if (System.getenv("AGT_KEYSTORE_FILE") != null) {
+                signingConfig = signingConfigs.getByName("stable")
+            }
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
