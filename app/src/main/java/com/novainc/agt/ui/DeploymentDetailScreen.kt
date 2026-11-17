@@ -68,6 +68,7 @@ fun DeploymentDetailScreen(deploymentId: String, onBack: () -> Unit, onOpenConso
     LaunchedEffect(Unit) {
         while (true) {
             deployment = runtime.store.loadDeployments().firstOrNull { it.id == deploymentId }
+                ?.let { it.copy(status = runtime.supervisor.displayStatus(it)) }
             process = runtime.store.loadProcesses().firstOrNull { it.deploymentId == deploymentId }
             logs = runtime.supervisor.readLog(deploymentId).lines().filter { it.isNotBlank() }.takeLast(300)
             nowMs = System.currentTimeMillis()

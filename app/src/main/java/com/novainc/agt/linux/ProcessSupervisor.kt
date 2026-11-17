@@ -181,6 +181,38 @@ class ProcessSupervisor(
         }
     }
 
+    /** The status to SHOW for a deployment, derived live at read
+     * time from what the supervisor knows right now: the stored
+     * status is the watcher's account, but the watcher ticks on a
+     * delay the OS can stretch (the field case, 2026-11-16: the
+     * list read STARTING at 2:30 of uptime while the detail read
+     * RUNNING a minute later, because the promotion write landed
+     * between the two reads). Every surface that displays or
+     * publishes a status goes through here (both deployment
+     * screens, the sync upsert, the telemetry running count), so
+     * they can never disagree with each other again: a live
+     * process past the earned-running threshold reads running the
+     * moment it is true, not the moment a delayed write lands. */
+    fun displayStatus(deployment: Deployment): String {
+        if (deployment.status == "stopped") return "stopped"
+        val h = health[deployment.id]
+        if ((h?.fastExits ?: 0) >= CRASH_LOOP_FAST_EXITS) return "crash-looping"
+        val proc = running[deployment.id]
+        if (proc?.isAlive == true) {
+            val rec = store.loadProcesses()
+                .firstOrNull { it.deploymentId == deployment.id }
+            val startedAt = rec?.startedAt ?: 0L
+            return if (startedAt != 0L &&
+                System.currentTimeMillis() - startedAt >= EARNED_RUNNING_MS
+            ) {
+                "running"
+            } else {
+                "starting"
+            }
+        }
+        return deployment.status
+    }
+
     /** Health: the process is alive, and its port answers when it has one. */
     fun healthy(deployment: Deployment): Boolean {
         if (!isRunning(deployment.id)) return false

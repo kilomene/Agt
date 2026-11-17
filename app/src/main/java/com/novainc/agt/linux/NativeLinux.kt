@@ -178,6 +178,25 @@ class NativeLinux(
         return if (f.isDirectory) f else homeDir
     }
 
+    /** The environment for a process whose working directory is
+     * [dir]: the shared environment plus PWD naming that directory.
+     * Android denies this app getcwd() path reconstruction (the
+     * parents above the app's own directory are not readable by
+     * the app uid), so a shell spawned without PWD prints
+     * "shell-init: error retrieving current directory: getcwd:
+     * cannot access parent directories: Permission denied" at
+     * startup and its pwd builtin fails, even though its working
+     * directory is exactly right (proven on the phone 2026-11-16:
+     * /proc/self/cwd named the right directory while pwd printed
+     * nothing). With PWD present and matching the working
+     * directory, bash validates it by stat, which works, and never
+     * calls getcwd: same shell, PWD set, pwd answers and the error
+     * is gone. A caller-supplied PWD wins. */
+    private fun environmentFor(dir: File, extra: Map<String, String>): Map<String, String> {
+        val merged = environment(extra)
+        return if (merged.containsKey("PWD")) merged else merged + ("PWD" to dir.absolutePath)
+    }
+
     data class RunResult(val exitCode: Int, val stdout: String, val stderr: String)
 
     /** Run one command through the native bash and wait for it,
@@ -189,11 +208,12 @@ class NativeLinux(
         env: Map<String, String> = emptyMap(),
         timeoutSec: Long = 120
     ): RunResult {
+        val dir = resolveWorkdir(workdir)
         val pb = ProcessBuilder(bashPath, "-c", command)
-        pb.directory(resolveWorkdir(workdir))
+        pb.directory(dir)
         val pbEnv = pb.environment()
         pbEnv.clear()
-        pbEnv.putAll(environment(env))
+        pbEnv.putAll(environmentFor(dir, env))
         pb.redirectErrorStream(false)
         val proc = pb.start()
         val out = StringBuilder()
@@ -225,7 +245,7 @@ class NativeLinux(
         pb.directory(workdir)
         val pbEnv = pb.environment()
         pbEnv.clear()
-        val merged = environment(env)
+        val merged = environmentFor(workdir, env)
         pbEnv.putAll(merged)
         if (!env.containsKey("HOME")) {
             pbEnv["HOME"] = workdir.absolutePath
@@ -250,7 +270,7 @@ class NativeLinux(
         return NativePty.create(
             cmd = bashPath,
             argv = listOf(bashPath, "-l"),
-            env = environment(),
+            env = environmentFor(workdir, emptyMap()),
             cwd = workdir.absolutePath
         )
     }
@@ -283,16 +303,24 @@ class NativeLinux(
             lines += "N probe skipped: bootstrap not installed"
             return Diagnosis(false, lines.joinToString("\n"), "native Linux not installed yet")
         }
+        // The probe proves three things, not one: the shell answers,
+        // it knows where it stands (pwd prints the home directory,
+        // which only works when the spawn carried PWD, see
+        // environmentFor), and its startup is clean (no getcwd
+        // error on stderr). A shell that answers but cannot say
+        // where it is, or that greets with an error, is not ready.
         val probe = try {
-            runOneShot("echo AGT_LINUX_OK", timeoutSec = 20)
+            runOneShot("pwd; echo AGT_LINUX_OK", timeoutSec = 20)
         } catch (e: Exception) {
             lines += "N probe threw: ${e.message}"
             return Diagnosis(false, lines.joinToString("\n"),
                 "native shell probe failed to start: ${e.message}".take(160))
         }
-        val ok = probe.exitCode == 0 && probe.stdout.contains("AGT_LINUX_OK")
+        val ok = probe.exitCode == 0 && probe.stdout.contains("AGT_LINUX_OK") &&
+            probe.stdout.contains("files/home") && !probe.stderr.contains("getcwd")
         val heard = (probe.stdout + probe.stderr).replace(Regex("\\s+"), " ").trim().take(110)
-        lines += "N probe exit=${probe.exitCode} out='$heard'"
+        lines += "N probe exit=${probe.exitCode} pwdOk=${probe.stdout.contains("files/home")} " +
+            "stderrClean=${!probe.stderr.contains("getcwd")} out='$heard'"
         val detail = if (ok) {
             "native shell answered AGT_LINUX_OK (bash on bionic, no proot)"
         } else {

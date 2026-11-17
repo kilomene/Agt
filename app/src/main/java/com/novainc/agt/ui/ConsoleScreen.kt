@@ -280,7 +280,7 @@ fun ConsoleScreen() {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("Linux Console", color = AgtColors.TextPrimary, fontSize = 24.sp, fontWeight = FontWeight.Bold)
-                Text("Debian 12 layer · no root needed", color = AgtColors.TextDim, fontSize = 13.sp)
+                Text("Native Linux layer · no root needed", color = AgtColors.TextDim, fontSize = 13.sp)
             }
             TintedPill(
                 if (linuxReady) "VM READY" else "VM NOT READY",

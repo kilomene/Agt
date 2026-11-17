@@ -108,7 +108,7 @@ fun DeploymentsScreen(
             }
             for (d in shown) {
                 DeploymentCard(
-                    deployment = d,
+                    deployment = d.copy(status = runtime.supervisor.displayStatus(d)),
                     process = processes.firstOrNull { it.deploymentId == d.id },
                     healthy = runtime.supervisor.healthy(d),
                     nowMs = nowMs,

@@ -166,7 +166,7 @@ class AgtRuntime private constructor(private val context: Context) {
             addProperty("syncError", _syncError.value ?: "")
             addProperty("installStatus", _installStatus.value.take(120))
             addProperty("deployments", store.loadDeployments().size)
-            addProperty("running", store.loadDeployments().count { it.status == "running" })
+            addProperty("running", store.loadDeployments().count { supervisor.displayStatus(it) == "running" })
         }
     }
 
@@ -343,7 +343,7 @@ class AgtRuntime private constructor(private val context: Context) {
             supabase.heartbeat(hid, telemetryJson())
             val deployments = store.loadDeployments()
             for (d in deployments) {
-                try { supabase.upsertDeployment(hid, d) } catch (e: Exception) { }
+                try { supabase.upsertDeployment(hid, d.copy(status = supervisor.displayStatus(d))) } catch (e: Exception) { }
                 uploadNewLogLines(d.id)
             }
             _lastSyncOkMs.value = System.currentTimeMillis()
