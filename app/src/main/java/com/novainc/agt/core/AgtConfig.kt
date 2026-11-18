@@ -45,5 +45,12 @@ object AgtConfig {
     // field, whose name predates the change.
     const val BOOTSTRAP_ASSET = "bootstrap-aarch64.zip"
     const val BOOTSTRAP_SHA256 = "bcc559abd669383c23ac5ecfcc024598b9739c34332f6801e6085b74d1d974ef"
-    const val BOOTSTRAP_VERSION = "agt-bootstrap-v1"
+    // BOOTSTRAP_VERSION must change every time the zip's contents
+    // change: NativeLinux.isInstalled() trusts the recorded version
+    // and skips extraction when it matches, so a new zip under an
+    // old version string never lands on an updated phone (proven
+    // the hard way on v1.6.15: the pin moved, the version did not,
+    // and python/git stayed inside the APK). The phase harness pins
+    // this string together with the sha so the pair cannot drift.
+    const val BOOTSTRAP_VERSION = "agt-bootstrap-v2"
 }
