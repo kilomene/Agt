@@ -162,7 +162,17 @@ class NativeLinux(
             "TERM" to "xterm-256color",
             "LANG" to "C.UTF-8",
             "SHELL" to bashPath,
-            "LD_LIBRARY_PATH" to libDir.absolutePath
+            "LD_LIBRARY_PATH" to libDir.absolutePath,
+            // TLS trust for every tool in the prefix points at the
+            // CA bundle shipped in the bootstrap (etc/tls/cert.pem):
+            // OpenSSL (Python ssl) reads SSL_CERT_FILE, libcurl
+            // readers read CURL_CA_BUNDLE, git reads GIT_SSL_CAINFO.
+            // Android's system CA store cannot be used for this:
+            // its old-style subject hashes do not match OpenSSL 3
+            // lookup, so verified HTTPS failed on v1.6.16.
+            "SSL_CERT_FILE" to "${prefixDir.absolutePath}/etc/tls/cert.pem",
+            "CURL_CA_BUNDLE" to "${prefixDir.absolutePath}/etc/tls/cert.pem",
+            "GIT_SSL_CAINFO" to "${prefixDir.absolutePath}/etc/tls/cert.pem"
         )
         env.putAll(extra)
         return env
