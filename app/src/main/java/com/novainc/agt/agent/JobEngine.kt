@@ -54,6 +54,28 @@ class JobEngine(
 
     private val pollRequested = java.util.concurrent.atomic.AtomicBoolean(false)
 
+    /**
+     * Job ids this process has already taken ownership of. The
+     * atomic Supabase claim is the real guard; this set is the
+     * in-process second lock, so a job id handed to handle() twice
+     * in one process lifetime (overlapping poll loops around a leg
+     * restart) is executed exactly once here as well. Bounded: the
+     * oldest ids fall out past the cap, and by then the row's
+     * terminal state in Supabase is the standing guard.
+     */
+    private val ownedJobIds: MutableSet<String> =
+        java.util.Collections.synchronizedSet(
+            object : java.util.LinkedHashSet<String>() {
+                override fun add(element: String): Boolean {
+                    val added = super.add(element)
+                    if (added) {
+                        while (size > 512) remove(iterator().next())
+                    }
+                    return added
+                }
+            }
+        )
+
     /** Wake the poll loop NOW instead of waiting out the 15 second
      * cycle: a doorbell ring or an FCM wake lands here and the queued
      * jobs are picked up within a quarter second. */
@@ -97,8 +119,17 @@ class JobEngine(
         val kind = job.get("kind").asString
         val payload = job.getAsJsonObject("payload")
         val signature = job.get("signature")?.takeIf { !it.isJsonNull }?.asString
+        // Idempotency gate: a job executes exactly once. If this
+        // process already owns the id, or the atomic claim finds
+        // the row no longer queued (another loop claimed it, or it
+        // already finished), skip it silently: never re-execute,
+        // never write a second result over the first one. (Field
+        // proof 2026-11-17: an agent_revoke executed twice this
+        // way, and the second pass overwrote {revoked: true} with
+        // "no such agent" even though the revoke had landed.)
+        if (!ownedJobIds.add(jobId)) return
         try {
-            supabase.claimJob(jobId)
+            if (!supabase.claimJob(jobId)) return
             val settings = store.loadSettings()
             // Trust root: the trusted agents list. Verification tries
             // the main agent's key first (the paired key when there is
@@ -149,6 +180,12 @@ class JobEngine(
                     NotifyKind.JOB, "Job done: $kind", summarize(kind, result))
             }
         } catch (e: Exception) {
+            // Release the in-process guard so a failure at the claim
+            // step (row still queued) can be retried by a later poll.
+            // A failure after the claim is safe either way: the row
+            // is claimed or terminal by then, never queued again, so
+            // the atomic claim refuses any second execution.
+            ownedJobIds.remove(jobId)
             try {
                 supabase.failJob(jobId, e.message ?: "job failed")
             } catch (ignored: Exception) {

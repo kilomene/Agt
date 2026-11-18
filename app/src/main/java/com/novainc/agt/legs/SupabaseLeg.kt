@@ -113,22 +113,41 @@ class SupabaseLeg(private val store: AgtStore) {
         gson.fromJson(text, Array<JsonObject>::class.java).toList()
     }
 
-    suspend fun claimJob(jobId: String) = withContext(Dispatchers.IO) {
+    /**
+     * Claim a job atomically: the PATCH only matches while the row
+     * is still queued, and return=representation shows whether this
+     * caller won the row. Two poll loops racing the same job (the
+     * loop restarts on every leg reconnect, and cancellation is
+     * cooperative, so an old loop can still be holding a fetched
+     * job when the new one polls) can no longer both claim it: the
+     * loser's PATCH matches nothing and returns an empty array.
+     * Returns true only when this caller owns the job.
+     */
+    suspend fun claimJob(jobId: String): Boolean = withContext(Dispatchers.IO) {
         val body = JsonObject().apply {
             addProperty("status", "claimed")
             addProperty("claimed_at", java.time.Instant.now().toString())
         }
-        call(request("/rest/v1/jobs?id=eq.$jobId", "PATCH", gson.toJson(body)))
-        Unit
+        val req = request("/rest/v1/jobs?id=eq.$jobId&status=eq.queued", "PATCH", gson.toJson(body))
+            .newBuilder().header("Prefer", "return=representation").build()
+        val text = call(req)
+        val arr = gson.fromJson(text, Array<JsonObject>::class.java)
+        arr.isNotEmpty()
     }
 
+    /**
+     * Completion only lands from the claimed state this engine
+     * owns. If the row already reached a terminal state, the PATCH
+     * matches nothing and the first result stands: a finished job's
+     * result is never overwritten by a late second execution.
+     */
     suspend fun completeJob(jobId: String, result: JsonObject) = withContext(Dispatchers.IO) {
         val body = JsonObject().apply {
             addProperty("status", "done")
             addProperty("completed_at", java.time.Instant.now().toString())
             add("result", result)
         }
-        call(request("/rest/v1/jobs?id=eq.$jobId", "PATCH", gson.toJson(body)))
+        call(request("/rest/v1/jobs?id=eq.$jobId&status=eq.claimed", "PATCH", gson.toJson(body)))
         Unit
     }
 
@@ -138,7 +157,7 @@ class SupabaseLeg(private val store: AgtStore) {
             addProperty("completed_at", java.time.Instant.now().toString())
             add("result", JsonObject().apply { addProperty("error", error) })
         }
-        call(request("/rest/v1/jobs?id=eq.$jobId", "PATCH", gson.toJson(body)))
+        call(request("/rest/v1/jobs?id=eq.$jobId&status=eq.claimed", "PATCH", gson.toJson(body)))
         Unit
     }
 
