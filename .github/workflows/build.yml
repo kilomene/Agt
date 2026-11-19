@@ -68,11 +68,26 @@ jobs:
           AGT_KEYSTORE_PASSWORD: ${{ secrets.AGT_KEYSTORE_PASSWORD }}
         run: gradle :app:testDebugUnitTest :app:assembleDebug --console=plain
 
-      - name: Upload the debug APK
+      - name: Encrypt the APK for private delivery
+        run: |
+          set -euo pipefail
+          # The built app is never uploaded in the clear. This repo is
+          # public, and GitHub lets any signed in user download plain
+          # workflow artifacts from a public repo, so the APK is sealed
+          # with age to the recipient in .github/artifact-recipient.txt.
+          # Only the holder of the matching private key (Nova Inc, kept
+          # outside this repo) can open the artifact. Anyone else who
+          # downloads it gets an encrypted file, not the app.
+          curl -sL -o "$RUNNER_TEMP/age.tar.gz" https://github.com/FiloSottile/age/releases/download/v1.2.1/age-v1.2.1-linux-amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/age.tar.gz" -C "$RUNNER_TEMP" --no-same-owner
+          "$RUNNER_TEMP/age/age" -r "$(cat .github/artifact-recipient.txt)" -o app-debug.apk.age app/build/outputs/apk/debug/app-debug.apk
+          ls -la app-debug.apk.age
+
+      - name: Upload the encrypted APK (private)
         uses: actions/upload-artifact@v4
         with:
           name: agt-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: app-debug.apk.age
           if-no-files-found: error
 
       - name: Upload unit test reports
