@@ -13,6 +13,9 @@ import com.novainc.agt.deploy.Templates
 import com.novainc.agt.legs.SupabaseLeg
 import com.novainc.agt.linux.ProcessSupervisor
 import com.novainc.agt.linux.NativeLinux
+import com.novainc.agt.vault.SecretRedactor
+import com.novainc.agt.vault.VaultNames
+import com.novainc.agt.vault.VaultStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -37,7 +40,8 @@ class JobEngine(
     private val linux: NativeLinux,
     private val supervisor: ProcessSupervisor,
     private val deployEngine: DeploymentEngine,
-    private val identity: DeviceIdentity
+    private val identity: DeviceIdentity,
+    private val vault: VaultStore
 ) {
     private val gson = Gson()
     private var loop: Job? = null
@@ -257,25 +261,51 @@ class JobEngine(
                 val command = payload.get("command")?.asString ?: ""
                 val workdir = payload.get("workdir")?.asString ?: "/root"
                 val run = linux.runOneShot(command, workdir, emptyMap(), 120)
+                // Command output is a job result, so it passes
+                // the vault redactor before it is written back
+                // (per-agent Vault rule 5): a command that prints
+                // a secret cannot leak it through its own result.
+                val values = vault.allValues()
                 JsonObject().apply {
                     addProperty("exit", run.exitCode)
-                    addProperty("stdout", run.stdout.take(4000))
-                    addProperty("stderr", run.stderr.take(4000))
+                    addProperty("stdout", SecretRedactor.redact(run.stdout, values).take(4000))
+                    addProperty("stderr", SecretRedactor.redact(run.stderr, values).take(4000))
                 }
             }
             "deploy" -> {
+                // The deployment's owner is the verified signer,
+                // never a payload field: ownership decides whose
+                // vault its declared secrets come from. The
+                // payload declares secret NAMES only; values are
+                // never in a job, they are injected by the
+                // supervisor from the owner's vault at start.
+                val owner = AgentTrust.agentIdOf(signer)
+                val secretNames = mutableListOf<String>()
+                val secretsEl = payload.get("secrets")
+                if (secretsEl != null && secretsEl.isJsonArray) {
+                    for (el in secretsEl.asJsonArray) {
+                        if (el.isJsonPrimitive && el.asJsonPrimitive.isString) {
+                            val n = el.asString
+                            if (VaultNames.isValidName(n)) secretNames.add(n)
+                        }
+                    }
+                }
                 val templateId = payload.get("template")?.asString
                 val deployment = if (templateId != null) {
                     val template = Templates.byId(templateId)
                         ?: return fail("unknown template $templateId")
                     val name = payload.get("name")?.asString ?: template.name
-                    deployEngine.createFromTemplate(template, name)
+                    deployEngine.createFromTemplate(
+                        template, name, owner = owner, secrets = secretNames
+                    )
                 } else {
                     val git = payload.get("git")?.asString ?: return fail("deploy needs template or git")
                     val name = payload.get("name")?.asString ?: git.substringAfterLast("/").removeSuffix(".git")
                     val command = payload.get("command")?.asString ?: "python3 -m http.server 8080"
                     val port = payload.get("port")?.asInt ?: 0
-                    deployEngine.createFromGit(git, name, command, port)
+                    deployEngine.createFromGit(
+                        git, name, command, port, owner = owner, secrets = secretNames
+                    )
                 }
                 supervisor.start(deployment)
                 JsonObject().apply {
@@ -352,9 +382,50 @@ class JobEngine(
                     ch.settings ?: current
                 }
                 if (change?.settings == null) return fail(change?.error ?: "agent_revoke refused")
+                // Revocation ends the agent's access whole: its
+                // vault is wiped with its trust (per-agent Vault
+                // rule 0), so a revoked agent leaves no secrets
+                // behind on the phone.
+                vault.wipe(agentId)
                 JsonObject().apply {
                     addProperty("revoked", true)
                     addProperty("revokedAgent", agentId)
+                }
+            }
+            "secret_set" -> {
+                // Write one secret into the SIGNER's own vault.
+                // The vault is chosen by the verified signature,
+                // never by the payload: an agent can only ever
+                // write its own vault, and the result carries the
+                // name and a stored flag, never the value.
+                val name = payload.get("name")?.asString ?: return fail("name missing")
+                val value = payload.get("value")?.asString ?: return fail("value missing")
+                if (!VaultNames.isValidName(name)) return fail("bad secret name")
+                val me = AgentTrust.agentIdOf(signer)
+                if (!vault.set(me, name, value)) return fail("secret not stored")
+                JsonObject().apply {
+                    addProperty("stored", true)
+                    addProperty("name", name)
+                }
+            }
+            "secret_list" -> {
+                // The NAMES in the signer's own vault. There is
+                // deliberately no variant that names another
+                // agent: an agent cannot even learn what names
+                // live in someone else's vault.
+                val me = AgentTrust.agentIdOf(signer)
+                val arr = com.google.gson.JsonArray()
+                for (n in vault.names(me)) arr.add(n)
+                JsonObject().apply { add("names", arr) }
+            }
+            "secret_delete" -> {
+                // Delete one secret from the signer's own vault.
+                val name = payload.get("name")?.asString ?: return fail("name missing")
+                val me = AgentTrust.agentIdOf(signer)
+                if (!vault.delete(me, name)) return fail("no such secret")
+                JsonObject().apply {
+                    addProperty("deleted", true)
+                    addProperty("name", name)
                 }
             }
             else -> fail("unknown job kind $kind")
@@ -373,6 +444,9 @@ class JobEngine(
             "firebase_token" -> "token saved"
             "agent_add" -> "agent added"
             "agent_revoke" -> "agent revoked"
+            "secret_set" -> "secret stored"
+            "secret_list" -> "secret names listed"
+            "secret_delete" -> "secret deleted"
             else -> kind
         }
     }

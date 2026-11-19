@@ -47,7 +47,8 @@ jobs:
           # bundle is gone: Linux is native now, not a guest.
           echo "06aabdf71b7fbcd49e4a858f78f0ccd5d2b7c02777132a9ab81f80b9c8258152  native-binaries/libagtpty.so" | sha256sum -c -
           cp native-binaries/libagtpty.so app/src/main/jniLibs/arm64-v8a/libagtpty.so
-          echo "47ae18606e1fb0c0422e6ee0b7092b31d08bfe9dfabec680c1b268551f266d50  native-bootstrap/bootstrap-aarch64.zip" | sha256sum -c -
+          cat native-bootstrap/bootstrap-aarch64.zip.part* > native-bootstrap/bootstrap-aarch64.zip
+          echo "6f6e49a5f5d692ee4fc35889df43f028caee46be5310e31efbc80772158f5d25  native-bootstrap/bootstrap-aarch64.zip" | sha256sum -c -
           cp native-bootstrap/bootstrap-aarch64.zip app/src/main/assets/bootstrap-aarch64.zip
           ls -la app/src/main/jniLibs/arm64-v8a/ app/src/main/assets/
 

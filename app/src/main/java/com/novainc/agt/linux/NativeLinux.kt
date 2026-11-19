@@ -244,12 +244,21 @@ class NativeLinux(
      * logging to a file. The deployment's own directory is its
      * working directory and its HOME unless its env says
      * otherwise: what the bind mount used to fake inside the
-     * guest is simply true here. */
+     * guest is simply true here.
+     *
+     * When [redact] is given, the process output does NOT go
+     * straight to the log file: it is piped through a copier
+     * thread that passes every line through the redactor before
+     * appending it, so a secret value the process prints (its
+     * own env dump, a config echo) never lands in the saved log
+     * (per-agent Vault rule 5). Without a redactor the direct
+     * file redirect is used exactly as before. */
     fun startBackground(
         command: String,
         workdir: File,
         env: Map<String, String>,
-        logFile: File
+        logFile: File,
+        redact: ((String) -> String)? = null
     ): Process {
         val pb = ProcessBuilder(bashPath, "-c", command)
         pb.directory(workdir)
@@ -260,9 +269,32 @@ class NativeLinux(
         if (!env.containsKey("HOME")) {
             pbEnv["HOME"] = workdir.absolutePath
         }
-        pb.redirectOutput(ProcessBuilder.Redirect.appendTo(logFile))
-        pb.redirectError(ProcessBuilder.Redirect.appendTo(logFile))
-        return pb.start()
+        if (redact == null) {
+            pb.redirectOutput(ProcessBuilder.Redirect.appendTo(logFile))
+            pb.redirectError(ProcessBuilder.Redirect.appendTo(logFile))
+            return pb.start()
+        }
+        pb.redirectErrorStream(true)
+        pb.redirectOutput(ProcessBuilder.Redirect.PIPE)
+        val proc = pb.start()
+        val copier = Thread {
+            try {
+                proc.inputStream.bufferedReader().use { reader ->
+                    while (true) {
+                        val line = reader.readLine() ?: break
+                        logFile.appendText(redact(line) + "\n")
+                    }
+                }
+            } catch (e: Exception) {
+                // The process died or the stream closed: the log
+                // simply ends, exactly as a direct redirect's
+                // would.
+            }
+        }
+        copier.isDaemon = true
+        copier.name = "agt-log-copier"
+        copier.start()
+        return proc
     }
 
     /** A persistent interactive shell for the console: native bash

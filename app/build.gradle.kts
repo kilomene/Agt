@@ -20,8 +20,8 @@ android {
         // app (Termux included) targets 28 for this reason.
         // compileSdk stays 34; only the target is pinned.
         targetSdk = 28
-        versionCode = 25
-        versionName = "1.6.17"
+        versionCode = 26
+        versionName = "1.6.18"
         // Client config injected at build time from CI secrets (GitHub
         // repo secrets SUPABASE_ANON_KEY and TUNNEL_TOKEN). Local builds
         // without the env vars build with empty values and the legs

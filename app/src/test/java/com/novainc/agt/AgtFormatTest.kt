@@ -69,7 +69,7 @@ class AgtFormatTest {
     fun slugsAndSubdomains() {
         assertEquals("meme-bot", slugify("meme-bot"))
         assertEquals("telegram-bot", slugify("Telegram Bot"))
-        assertEquals("meme.agt.novamail.store", subdomainOf("meme"))
+        assertEquals("meme-agt.novamail.store", subdomainOf("meme"))
     }
 
     @Test

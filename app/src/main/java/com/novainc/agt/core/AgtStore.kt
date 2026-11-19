@@ -24,11 +24,28 @@ data class Deployment(
     val status: String = "stopped",
     val createdAt: Long = System.currentTimeMillis(),
     // The deployment's unique subdomain slug under
-    // agt.novamail.store, assigned once at creation and never
-    // shared: two deployments with the same name still get two
-    // different addresses. Empty on rows written by older builds;
-    // DeploymentEngine.backfillSlugs() fills those in at start.
-    val slug: String = ""
+    // novamail.store (its public address is the slug flattened
+    // onto the domain: <slug>-agt.novamail.store), assigned once
+    // at creation and never shared: two deployments with the
+    // same name still get two different addresses. Empty on rows
+    // written by older builds; DeploymentEngine.backfillSlugs()
+    // fills those in at start.
+    val slug: String = "",
+    // The agent that owns this deployment: the verified signer
+    // of the deploy job that created it, or empty for one the
+    // owner created on the phone itself. Ownership decides whose
+    // vault may inject secrets into it (per-agent Vault rule):
+    // a deployment only ever receives secrets from its owner's
+    // vault. Null on rows written before the vault existed; every
+    // read goes through DeploymentEngine.storedOwner.
+    val owner: String? = "",
+    // The NAMES of the vault secrets this deployment receives at
+    // start, never values: the values live only in the owner's
+    // vault and are injected into the process environment by the
+    // supervisor at start. Null on rows written before the vault
+    // existed; every read goes through
+    // DeploymentEngine.storedSecrets.
+    val secrets: List<String>? = emptyList()
 )
 
 data class ProcessRecord(

@@ -80,13 +80,18 @@ fun slugify(name: String): String =
     name.lowercase().map { if (it.isLetterOrDigit()) it else '-' }
         .joinToString("").trim('-').replace(Regex("-+"), "-")
 
-fun subdomainOf(name: String): String = slugify(name) + ".agt.novamail.store"
+fun subdomainOf(name: String): String = slugify(name) + "-agt.novamail.store"
 
 /** The deployment's own public address: built from its stored
  * unique slug, never from the bare name alone, so the address on
- * the card is one no other deployment can claim. */
+ * the card is one no other deployment can claim. The scheme is
+ * the flattened one (owner decision 2026-11-18): the slug joins
+ * the domain with a dash, <slug>-agt.novamail.store, so the free
+ * Cloudflare wildcard certificate covers it and HTTPS works.
+ * The two-level <slug>.agt.novamail.store form is retired; the
+ * publisher no longer creates it. */
 fun subdomainOf(d: Deployment): String =
-    com.novainc.agt.deploy.DeploymentEngine.effectiveSlug(d) + ".agt.novamail.store"
+    com.novainc.agt.deploy.DeploymentEngine.effectiveSlug(d) + "-agt.novamail.store"
 
 /** Runtime word for a deployment, read from its real start command. */
 fun runtimeLabel(d: Deployment): String = when {

@@ -33,7 +33,9 @@ class DeploymentEngine(
         template: Template, name: String,
         command: String = template.command,
         port: Int = template.port,
-        env: Map<String, String> = template.env
+        env: Map<String, String> = template.env,
+        owner: String = "",
+        secrets: List<String> = emptyList()
     ): Deployment {
         val id = UUID.randomUUID().toString()
         val dir = store.deploymentDir(id)
@@ -53,7 +55,9 @@ class DeploymentEngine(
             workdir = guestWorkdir,
             env = env,
             port = port,
-            slug = uniqueSlug(name, id, list.map { effectiveSlug(it) }.toSet())
+            slug = uniqueSlug(name, id, list.map { effectiveSlug(it) }.toSet()),
+            owner = owner,
+            secrets = secrets
         )
         list.add(deployment)
         store.saveDeployments(list)
@@ -92,7 +96,9 @@ class DeploymentEngine(
         url: String, name: String, command: String, port: Int,
         env: Map<String, String> = emptyMap(),
         autoRestart: Boolean = true,
-        batteryGuard: Boolean = false
+        batteryGuard: Boolean = false,
+        owner: String = "",
+        secrets: List<String> = emptyList()
     ): Deployment =
         withContext(Dispatchers.IO) {
             val tarballUrl = gitTarballUrl(url)
@@ -125,7 +131,9 @@ class DeploymentEngine(
                 port = port,
                 autoRestart = autoRestart,
                 batteryGuard = batteryGuard,
-                slug = uniqueSlug(name, id, list.map { effectiveSlug(it) }.toSet())
+                slug = uniqueSlug(name, id, list.map { effectiveSlug(it) }.toSet()),
+                owner = owner,
+                secrets = secrets
             )
             list.add(deployment)
             store.saveDeployments(list)
@@ -208,6 +216,24 @@ class DeploymentEngine(
             return if (raw.isNullOrBlank()) "" else raw
         }
 
+        /** The owning agent stored on a row, with the same Gson
+         * tolerance as storedSlug: rows written before the
+         * per-agent Vault existed read back null, which means
+         * owner-created on the phone, not any agent. */
+        fun storedOwner(d: Deployment): String {
+            val raw: String? = d.owner
+            return if (raw.isNullOrBlank()) "" else raw
+        }
+
+        /** The secret NAMES stored on a row, with the same Gson
+         * tolerance: a pre-vault row reads back null, which means
+         * the deployment declares no secrets. */
+        fun storedSecrets(d: Deployment): List<String> {
+            val raw: List<String>? = d.secrets
+            if (raw == null) return emptyList()
+            return raw.filter { it.isNotBlank() }
+        }
+
         /** The subdomain slug a deployment answers to: its stored
          * slug, or the name-derived slug for rows written before
          * slugs were stored. */
@@ -219,7 +245,7 @@ class DeploymentEngine(
          * base plus a unique code from its own id, so two servers
          * can never share one address (the field bug the owner
          * caught: four deployments named pic all answering to
-         * pic.agt.novamail.store). */
+         * pic-agt.novamail.store). */
         fun uniqueSlug(name: String, id: String, taken: Set<String>): String {
             val base = com.novainc.agt.ui.slugify(name).ifBlank { "deployment" }
             if (base !in taken) return base

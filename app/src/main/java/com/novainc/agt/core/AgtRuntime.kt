@@ -34,13 +34,14 @@ import java.util.concurrent.ConcurrentHashMap
 class AgtRuntime private constructor(private val context: Context) {
     val store = AgtStore(context.applicationContext)
     val linux = NativeLinux(context.applicationContext, store)
-    val supervisor = ProcessSupervisor(context.applicationContext, store, linux)
+    val vault = com.novainc.agt.vault.VaultStore(context.applicationContext)
+    val supervisor = ProcessSupervisor(context.applicationContext, store, linux, vault)
     val deployEngine = DeploymentEngine(context.applicationContext, store, supervisor)
     val supabase = SupabaseLeg(store)
     val tunnel = TunnelLeg(context.applicationContext)
     val firebase = FirebaseLeg(store)
     val identity = DeviceIdentity(context.applicationContext, store)
-    val jobEngine = JobEngine(store, supabase, linux, supervisor, deployEngine, identity)
+    val jobEngine = JobEngine(store, supabase, linux, supervisor, deployEngine, identity, vault)
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var syncJob: Job? = null
@@ -134,7 +135,9 @@ class AgtRuntime private constructor(private val context: Context) {
 
     /** Revoke one admitted agent from the phone itself (the Agent
      * screen's revoke button). The main agent cannot be revoked;
-     * AgentTrust refuses and this returns false. */
+     * AgentTrust refuses and this returns false. A landed revoke
+     * also wipes the agent's vault: revocation ends its access to
+     * its secrets along with its trust. */
     fun revokeAgent(agentId: String): Boolean {
         var change: com.novainc.agt.agent.AgentTrust.Change? = null
         store.updateSettings { s ->
@@ -142,7 +145,9 @@ class AgtRuntime private constructor(private val context: Context) {
             change = ch
             ch.settings ?: s
         }
-        return change?.settings != null
+        val revoked = change?.settings != null
+        if (revoked) vault.wipe(agentId)
+        return revoked
     }
 
     fun telemetryJson(): JsonObject {
@@ -406,6 +411,17 @@ class AgtRuntime private constructor(private val context: Context) {
     /** Start everything the host needs: supervisor restore, legs, jobs. */
     fun startAll() {
         wireAlerts()
+        // Vault migration (design rule 6): any plain interim
+        // secret files left by the pre-vault secrets path are
+        // imported into the main agent's vault and shredded,
+        // once. Guarded inside VaultStore by its marker, and a
+        // failure here must never hold up the host's start.
+        try {
+            vault.migrateInterimSecrets(
+                context.applicationContext.filesDir,
+                com.novainc.agt.agent.AgentTrust.MAIN_AGENT_ID
+            )
+        } catch (e: Exception) { }
         // Unique subdomains: deployments stored by older builds
         // carry no slug and would share the name-derived address
         // with any same-named deployment. Fill the slugs in before

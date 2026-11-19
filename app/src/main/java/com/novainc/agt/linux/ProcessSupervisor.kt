@@ -4,6 +4,10 @@ import android.content.Context
 import com.novainc.agt.core.AgtStore
 import com.novainc.agt.core.Deployment
 import com.novainc.agt.core.ProcessRecord
+import com.novainc.agt.deploy.DeploymentEngine
+import com.novainc.agt.vault.SecretRedactor
+import com.novainc.agt.vault.VaultNames
+import com.novainc.agt.vault.VaultStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -35,7 +39,8 @@ import java.util.concurrent.ConcurrentHashMap
 class ProcessSupervisor(
     private val context: Context,
     private val store: AgtStore,
-    private val linux: NativeLinux
+    private val linux: NativeLinux,
+    private val vault: VaultStore? = null
 ) {
     private val scope = CoroutineScope(Dispatchers.Default + Job())
     private val running = ConcurrentHashMap<String, Process>()
@@ -105,8 +110,45 @@ class ProcessSupervisor(
         // mounted into the rootfs at the deployment's workdir;
         // natively no mount is needed for the files to be exactly
         // where the process works.
+        // Vault injection (per-agent Vault rule 3): the secrets
+        // this deployment declares, by name only on its record,
+        // are read out of the OWNING agent's vault and merged
+        // into the process environment under their env var names.
+        // They never touch the command line, so a process listing
+        // shows nothing, and a deployment whose owner has no such
+        // secret simply starts without it, with the miss noted in
+        // its log by name only.
+        val effectiveEnv = deployment.env.toMutableMap()
+        val v = vault
+        if (v != null) {
+            val owner = DeploymentEngine.storedOwner(deployment)
+            if (owner.isNotEmpty()) {
+                for (name in DeploymentEngine.storedSecrets(deployment)) {
+                    val value = v.get(owner, name)
+                    if (value != null) {
+                        effectiveEnv[VaultNames.envVarName(name)] = value
+                    } else {
+                        appendLog(
+                            deployment.id,
+                            "[agt] secret $name is not in the owner's vault, not injected\n"
+                        )
+                    }
+                }
+            }
+        }
+        // The redactor's value list is captured at start: it
+        // covers every secret this process could print (its own
+        // injected ones above all), and readLog re-redacts with a
+        // fresh list on every read, which is the path results and
+        // uploads actually leave by.
+        val redactValues = v?.allValues() ?: emptyList()
         val proc = linux.startBackground(
-            deployment.command, hostDir, deployment.env, logFile
+            deployment.command, hostDir, effectiveEnv, logFile,
+            redact = if (v != null) {
+                { line: String -> SecretRedactor.redact(line, redactValues) }
+            } else {
+                null
+            }
         )
         val record = ProcessRecord(
             id = deployment.id,
@@ -348,7 +390,16 @@ class ProcessSupervisor(
         val file = store.logFileFor(deploymentId)
         if (!file.exists()) return ""
         val text = file.readText()
-        return if (text.length > maxChars) text.takeLast(maxChars) else text
+        val tail = if (text.length > maxChars) text.takeLast(maxChars) else text
+        // Every read of a deployment log leaves through here (the
+        // logs job, the detail screen, the Supabase log upload),
+        // and every one of them is scrubbed with a fresh vault
+        // value list first (per-agent Vault rule 5): the saved
+        // log was already redacted line by line as it was
+        // written, and this second pass catches anything that
+        // predates the vault or slipped a line boundary.
+        val v = vault ?: return tail
+        return SecretRedactor.redact(tail, v.allValues())
     }
 
     private fun appendLog(deploymentId: String, text: String) {

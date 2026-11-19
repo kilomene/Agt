@@ -202,8 +202,8 @@ private fun TemplateConfigView(
     val baseSlug = slugify(name)
     val addressText = when {
         baseSlug.isBlank() -> "Name the deployment to see its address."
-        baseSlug in takenSlugs -> "$baseSlug-<unique code>.agt.novamail.store"
-        else -> "$baseSlug.agt.novamail.store"
+        baseSlug in takenSlugs -> "$baseSlug-<unique code>-agt.novamail.store"
+        else -> "$baseSlug-agt.novamail.store"
     }
 
     Column(

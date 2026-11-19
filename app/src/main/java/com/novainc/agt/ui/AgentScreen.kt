@@ -64,6 +64,11 @@ fun AgentScreen(onOpenConsole: () -> Unit, onSettings: () -> Unit) {
     var pairLabel by remember { mutableStateOf("") }
     var newAgentId by remember { mutableStateOf("") }
     var mintNote by remember { mutableStateOf("") }
+    var vaultAgent by remember { mutableStateOf(AgentTrust.MAIN_AGENT_ID) }
+    var vaultNames by remember { mutableStateOf<List<String>>(emptyList()) }
+    var secretName by remember { mutableStateOf("") }
+    var secretValue by remember { mutableStateOf("") }
+    var vaultNote by remember { mutableStateOf("") }
     var nowMs by remember { mutableStateOf(System.currentTimeMillis()) }
     val serviceRunning by AgtService.running.collectAsState()
 
@@ -75,6 +80,7 @@ fun AgentScreen(onOpenConsole: () -> Unit, onSettings: () -> Unit) {
             agents = AgentTrust.agentsOf(settings)
             pairCode = AgentTrust.storedPairingCode(settings)
             pairLabel = AgentTrust.storedPairingAgentId(settings)
+            vaultNames = runtime.vault.names(vaultAgent)
             nowMs = System.currentTimeMillis()
             delay(1000)
         }
@@ -225,6 +231,134 @@ fun AgentScreen(onOpenConsole: () -> Unit, onSettings: () -> Unit) {
         AgtCard {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
+                    "AGENT VAULTS", color = AgtColors.TextDim, fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold, letterSpacing = 1.sp, modifier = Modifier.weight(1f)
+                )
+                Text("WRITE-ONLY", color = AgtColors.TextDim, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            }
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "Every agent has its own vault, encrypted on this phone. A secret goes in " +
+                    "and is never shown back: not here, not in a job result, not in a log. " +
+                    "A deployment only ever receives secrets from its own owner's vault. " +
+                    "You, holding this phone, are the only one who can wipe a vault.",
+                color = AgtColors.TextDim, fontSize = 12.5.sp
+            )
+            Spacer(Modifier.height(10.dp))
+            Row {
+                for (agent in agents) {
+                    val id = AgentTrust.storedAgentId(agent)
+                    val selected = id == vaultAgent
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(if (selected) AgtColors.SurfaceHigh else AgtColors.MatteBlack)
+                            .border(
+                                1.dp,
+                                if (selected) AgtColors.Gold else AgtColors.Stroke,
+                                RoundedCornerShape(10.dp)
+                            )
+                            .clickable { vaultAgent = id }
+                            .padding(horizontal = 12.dp, vertical = 8.dp)
+                    ) {
+                        Text(
+                            id,
+                            color = if (selected) AgtColors.GoldSoft else AgtColors.TextDim,
+                            fontSize = 12.5.sp, fontWeight = FontWeight.Bold
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            if (vaultNames.isEmpty()) {
+                Text(
+                    "No secrets in $vaultAgent's vault yet.",
+                    color = AgtColors.TextDim, fontSize = 12.5.sp
+                )
+            }
+            for (name in vaultNames) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    LineIcon(IconKind.Key, AgtColors.Gold, Modifier.size(16.dp))
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        name, color = AgtColors.TextPrimary, fontSize = 13.sp,
+                        fontFamily = FontFamily.Monospace, modifier = Modifier.weight(1f)
+                    )
+                    Text(
+                        "DELETE",
+                        color = AgtColors.Danger, fontSize = 11.5.sp, fontWeight = FontWeight.Bold,
+                        modifier = Modifier.clickable {
+                            runtime.vault.delete(vaultAgent, name)
+                            vaultNames = runtime.vault.names(vaultAgent)
+                            vaultNote = "$name removed from $vaultAgent's vault."
+                        }
+                    )
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            AgentDivider()
+            Spacer(Modifier.height(12.dp))
+            Text(
+                "ADD OR REPLACE A SECRET", color = AgtColors.TextDim, fontSize = 11.sp,
+                fontWeight = FontWeight.Bold, letterSpacing = 1.sp
+            )
+            Spacer(Modifier.height(8.dp))
+            AgtField(
+                value = secretName,
+                onChange = { secretName = it },
+                label = "SECRET NAME",
+                placeholder = "e.g. telegram-bot-token"
+            )
+            Spacer(Modifier.height(10.dp))
+            AgtField(
+                value = secretValue,
+                onChange = { secretValue = it },
+                label = "SECRET VALUE (NEVER SHOWN AGAIN)",
+                placeholder = "Paste the secret"
+            )
+            Spacer(Modifier.height(10.dp))
+            GhostButton(
+                "Store in $vaultAgent's vault",
+                onClick = {
+                    val n = secretName.trim()
+                    if (com.novainc.agt.vault.VaultNames.isValidName(n) && secretValue.isNotEmpty()) {
+                        if (runtime.vault.set(vaultAgent, n, secretValue)) {
+                            vaultNote = "$n stored in $vaultAgent's vault."
+                            secretName = ""
+                            secretValue = ""
+                            vaultNames = runtime.vault.names(vaultAgent)
+                        } else {
+                            vaultNote = "That secret could not be stored."
+                        }
+                    } else {
+                        vaultNote = "Name must be letters, digits, dot, dash or underscore, and the value must not be empty."
+                    }
+                },
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(Modifier.height(8.dp))
+            GhostButton(
+                "Wipe $vaultAgent's whole vault",
+                onClick = {
+                    runtime.vault.wipe(vaultAgent)
+                    vaultNames = runtime.vault.names(vaultAgent)
+                    vaultNote = "$vaultAgent's vault is wiped."
+                },
+                modifier = Modifier.fillMaxWidth()
+            )
+            if (vaultNote.isNotEmpty()) {
+                Spacer(Modifier.height(8.dp))
+                Text(vaultNote, color = AgtColors.GoldSoft, fontSize = 12.5.sp)
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        AgtCard {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
                     "RECENT JOB ACTIVITY", color = AgtColors.TextDim, fontSize = 11.sp,
                     fontWeight = FontWeight.Bold, letterSpacing = 1.sp, modifier = Modifier.weight(1f)
                 )
@@ -351,6 +485,9 @@ private fun JobRow(job: JobFeedEntry, nowMs: Long) {
         "pair" -> IconKind.Key
         "agent_add" -> IconKind.Key
         "agent_revoke" -> IconKind.Close
+        "secret_set" -> IconKind.Key
+        "secret_list" -> IconKind.Key
+        "secret_delete" -> IconKind.Close
         "firebase_token" -> IconKind.Flame
         else -> IconKind.Bolt
     }
