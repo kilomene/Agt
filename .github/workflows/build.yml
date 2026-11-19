@@ -8,6 +8,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Check out the code
         uses: actions/checkout@v4
@@ -71,29 +73,38 @@ jobs:
       - name: Encrypt the APK for private delivery
         run: |
           set -euo pipefail
-          # The built app is never uploaded in the clear. This repo is
-          # public, and GitHub lets any signed in user download plain
-          # workflow artifacts from a public repo, so the APK is sealed
-          # with age to the recipient in .github/artifact-recipient.txt.
-          # Only the holder of the matching private key (Nova Inc, kept
-          # outside this repo) can open the artifact. Anyone else who
-          # downloads it gets an encrypted file, not the app.
+          # The built app is never exposed in the clear. This repo is
+          # public, so the APK is sealed with age to the recipient in
+          # .github/artifact-recipient.txt. Only the holder of the
+          # matching private key (Nova Inc, kept outside this repo) can
+          # open the build. Anyone else who gets the file holds an
+          # encrypted blob, not the app.
           curl -sL -o "$RUNNER_TEMP/age.tar.gz" https://github.com/FiloSottile/age/releases/download/v1.2.1/age-v1.2.1-linux-amd64.tar.gz
           tar -xzf "$RUNNER_TEMP/age.tar.gz" -C "$RUNNER_TEMP" --no-same-owner
           "$RUNNER_TEMP/age/age" -r "$(cat .github/artifact-recipient.txt)" -o app-debug.apk.age app/build/outputs/apk/debug/app-debug.apk
           ls -la app-debug.apk.age
 
-      - name: Upload the encrypted APK (private)
-        uses: actions/upload-artifact@v4
-        with:
-          name: agt-debug-apk
-          path: app-debug.apk.age
-          if-no-files-found: error
-
-      - name: Upload unit test reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: agt-test-reports
-          path: app/build/reports/tests/
-          if-no-files-found: ignore
+      - name: Publish the encrypted build to the delivery branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # This repo publishes NO GitHub Actions artifacts at all:
+          # on a public repo, artifacts are downloadable by any signed
+          # in GitHub user, and the owner has ruled that out entirely.
+          # Instead the encrypted build is force pushed to the orphan
+          # "builds" branch, which always holds only the latest build,
+          # in locked (age encrypted) form. It is not an app anyone can
+          # install: only Nova Inc holds the private key that opens it.
+          sha256sum app-debug.apk.age | awk '{print $1}' > build-info.txt
+          echo "commit ${{ github.sha }}" >> build-info.txt
+          rm -rf publish && mkdir publish
+          cp app-debug.apk.age build-info.txt publish/
+          cd publish
+          git init -q
+          git config user.name "agt-ci"
+          git config user.email "ci@novamail.store"
+          git add app-debug.apk.age build-info.txt
+          git commit -qm "Encrypted build for ${{ github.sha }}"
+          git push --force "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" HEAD:builds
+          echo "published encrypted build to the builds branch"

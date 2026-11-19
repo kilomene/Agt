@@ -195,9 +195,10 @@ These are supplied to the build as secrets (see `.github/workflows/build.yml`
 for the exact list). Nothing in the code points a fork at Nova Inc's
 accounts: the configuration is injected at build time, never committed.
 
-**About the official build download:** the APK produced by this repo's
-GitHub Action is deliberately not downloadable in usable form. The action
-encrypts the built app before uploading it, and only Nova Inc holds the key.
+**About the official build download:** there is none, by design. This
+repo's GitHub Action publishes no downloadable artifacts at all. The built
+app is encrypted the moment it is built and held in that locked form on a
+separate delivery branch, and only Nova Inc holds the key that opens it.
 This is because the official build carries Nova Inc's own backend
 configuration. The code is open to fork; the company's running app is not a
 public download. If you want AGT, fork the repo and build yours.
