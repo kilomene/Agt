@@ -345,6 +345,19 @@ class JobEngine(
             "remove" -> {
                 val id = payload.get("deploymentId")?.asString ?: return fail("deploymentId missing")
                 deployEngine.delete(id)
+                // Instant path (v1.6.20, ghost-row root fix): the
+                // remote row is deleted in the same job, per the
+                // instant-realtime law, so the address stops
+                // publishing at once instead of waiting for the
+                // next sync cycle. Best effort only: a failure
+                // here never fails the remove, the sync
+                // reconciliation is the guaranteed net beneath it.
+                try {
+                    val hid = hostId
+                    if (hid != null && supabase.configured) {
+                        supabase.deleteDeployment(hid, id)
+                    }
+                } catch (e: Exception) { }
                 JsonObject().apply { addProperty("removed", true) }
             }
             "firebase_token" -> {

@@ -48,7 +48,7 @@ jobs:
           echo "06aabdf71b7fbcd49e4a858f78f0ccd5d2b7c02777132a9ab81f80b9c8258152  native-binaries/libagtpty.so" | sha256sum -c -
           cp native-binaries/libagtpty.so app/src/main/jniLibs/arm64-v8a/libagtpty.so
           cat native-bootstrap/bootstrap-aarch64.zip.part* > native-bootstrap/bootstrap-aarch64.zip
-          echo "de404d56dd986211dc7ccd5168a3765c8f031c39c44911d503ee918b42c92649  native-bootstrap/bootstrap-aarch64.zip" | sha256sum -c -
+          echo "b1efb4dd1277e58e068a470b1234f90507e0c921af9d45cc7356aee2e4be535e  native-bootstrap/bootstrap-aarch64.zip" | sha256sum -c -
           cp native-bootstrap/bootstrap-aarch64.zip app/src/main/assets/bootstrap-aarch64.zip
           ls -la app/src/main/jniLibs/arm64-v8a/ app/src/main/assets/
 

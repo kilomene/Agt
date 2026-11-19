@@ -44,7 +44,7 @@ object AgtConfig {
     // bundle's version is recorded in the settings' rootfsVersion
     // field, whose name predates the change.
     const val BOOTSTRAP_ASSET = "bootstrap-aarch64.zip"
-    const val BOOTSTRAP_SHA256 = "de404d56dd986211dc7ccd5168a3765c8f031c39c44911d503ee918b42c92649"
+    const val BOOTSTRAP_SHA256 = "b1efb4dd1277e58e068a470b1234f90507e0c921af9d45cc7356aee2e4be535e"
     // BOOTSTRAP_VERSION must change every time the zip's contents
     // change: NativeLinux.isInstalled() trusts the recorded version
     // and skips extraction when it matches, so a new zip under an
@@ -52,5 +52,5 @@ object AgtConfig {
     // the hard way on v1.6.15: the pin moved, the version did not,
     // and python/git stayed inside the APK). The phase harness pins
     // this string together with the sha so the pair cannot drift.
-    const val BOOTSTRAP_VERSION = "agt-bootstrap-v5"
+    const val BOOTSTRAP_VERSION = "agt-bootstrap-v6"
 }

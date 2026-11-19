@@ -62,6 +62,7 @@ class SupabaseLeg(private val store: AgtStore) {
         when (method) {
             "POST" -> builder.post((bodyJson ?: "{}").toRequestBody("application/json".toMediaType()))
             "PATCH" -> builder.patch((bodyJson ?: "{}").toRequestBody("application/json".toMediaType()))
+            "DELETE" -> builder.delete()
             else -> builder.get()
         }
         return builder.build()
@@ -187,6 +188,33 @@ class SupabaseLeg(private val store: AgtStore) {
             .newBuilder().header("Prefer", "resolution=merge-duplicates").build()
         call(req)
         Unit
+    }
+
+    /**
+     * Delete one deployment row, scoped to this host. The DELETE
+     * returns the deleted row with return=representation, so the
+     * caller can see whether anything was actually removed: a
+     * no-op (already gone) returns an empty array, not an error.
+     * This is the missing half of upsertDeployment: without it a
+     * removed deployment's row froze at its last status forever
+     * (ghost rows, 2026-11-19), and the domain reconciler kept
+     * publishing its address.
+     */
+    suspend fun deleteDeployment(hostId: String, deploymentId: String): Boolean = withContext(Dispatchers.IO) {
+        val req = request("/rest/v1/deployments?id=eq.$deploymentId&host_id=eq.$hostId", "DELETE")
+            .newBuilder().header("Prefer", "return=representation").build()
+        val text = call(req)
+        val arr = gson.fromJson(text, Array<JsonObject>::class.java)
+        arr.isNotEmpty()
+    }
+
+    /** The deployment ids Supabase currently holds for this host,
+     * used by the sync reconciliation to find ghost rows. */
+    suspend fun listDeploymentIds(hostId: String): Set<String> = withContext(Dispatchers.IO) {
+        val text = call(request("/rest/v1/deployments?host_id=eq.$hostId&select=id", "GET"))
+        gson.fromJson(text, Array<JsonObject>::class.java)
+            .mapNotNull { it.get("id")?.takeIf { v -> !v.isJsonNull }?.asString }
+            .toSet()
     }
 
     suspend fun uploadLogs(deploymentId: String, lines: List<String>) = withContext(Dispatchers.IO) {

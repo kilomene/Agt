@@ -351,6 +351,22 @@ class AgtRuntime private constructor(private val context: Context) {
                 try { supabase.upsertDeployment(hid, d.copy(status = supervisor.displayStatus(d))) } catch (e: Exception) { }
                 uploadNewLogLines(d.id)
             }
+            // True reconciliation (v1.6.20, ghost-row root fix): the
+            // local store is the single source of truth, so any
+            // remote deployment id with no local row is a ghost and
+            // is deleted. A removed deployment's row froze at its
+            // last status forever (2026-11-19) because the sync
+            // only ever upserted; now the table converges every
+            // cycle and self-heals every existing ghost. A failed
+            // delete is retried next cycle; one bad id never fails
+            // the sync.
+            try {
+                val localIds = deployments.map { it.id }.toSet()
+                val remoteIds = supabase.listDeploymentIds(hid)
+                for (ghost in remoteIds - localIds) {
+                    try { supabase.deleteDeployment(hid, ghost) } catch (e: Exception) { }
+                }
+            } catch (e: Exception) { }
             _lastSyncOkMs.value = System.currentTimeMillis()
             _syncError.value = null
         } catch (e: Exception) {
