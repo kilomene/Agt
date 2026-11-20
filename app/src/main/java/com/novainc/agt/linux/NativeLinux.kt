@@ -40,6 +40,13 @@ class NativeLinux(
     val prefixDir: File = File(context.filesDir, "usr")
     val binDir: File = File(prefixDir, "bin")
     val libDir: File = File(prefixDir, "lib")
+    // The add-on system's shared dirs (see addons/AddonStore):
+    // outside the prefix, so add-ons survive a bootstrap
+    // reinstall, and named here because environment() below is
+    // what puts them on PATH and LD_LIBRARY_PATH for every
+    // process the app spawns.
+    val addonsBinDir: File = File(context.filesDir, "addons/bin")
+    val addonsLibDir: File = File(context.filesDir, "addons/lib")
     val tmpDir: File = File(prefixDir, "tmp")
     val homeDir: File = File(context.filesDir, "home")
     private val stagingDir: File = File(context.filesDir, "usr-staging")
@@ -157,12 +164,20 @@ class NativeLinux(
         val env = linkedMapOf(
             "HOME" to homeDir.absolutePath,
             "PREFIX" to prefixDir.absolutePath,
-            "PATH" to "${binDir.absolutePath}:/system/bin:/system/xbin",
+            // Add-on tools come first on PATH: an add-on exists
+            // to be the tool a command reaches for, and installs
+            // are admin-only, so what stands here was put here
+            // deliberately. The prefix's own bin follows, then
+            // the system paths, exactly as before.
+            "PATH" to "${addonsBinDir.absolutePath}:${binDir.absolutePath}:/system/bin:/system/xbin",
             "TMPDIR" to tmpDir.absolutePath,
             "TERM" to "xterm-256color",
             "LANG" to "C.UTF-8",
             "SHELL" to bashPath,
-            "LD_LIBRARY_PATH" to libDir.absolutePath,
+            // The prefix lib keeps first place on the library
+            // path (the shell's own libncurses must never be
+            // shadowed); add-on libraries resolve after it.
+            "LD_LIBRARY_PATH" to "${libDir.absolutePath}:${addonsLibDir.absolutePath}",
             // TLS trust for every tool in the prefix points at the
             // CA bundle shipped in the bootstrap (etc/tls/cert.pem):
             // OpenSSL (Python ssl) reads SSL_CERT_FILE, libcurl

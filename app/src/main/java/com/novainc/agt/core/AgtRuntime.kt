@@ -41,7 +41,8 @@ class AgtRuntime private constructor(private val context: Context) {
     val tunnel = TunnelLeg(context.applicationContext)
     val firebase = FirebaseLeg(store)
     val identity = DeviceIdentity(context.applicationContext, store)
-    val jobEngine = JobEngine(store, supabase, linux, supervisor, deployEngine, identity, vault)
+    val addons = com.novainc.agt.addons.AddonStore(context.applicationContext)
+    val jobEngine = JobEngine(store, supabase, linux, supervisor, deployEngine, identity, vault, addons)
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var syncJob: Job? = null
@@ -443,6 +444,12 @@ class AgtRuntime private constructor(private val context: Context) {
         // with any same-named deployment. Fill the slugs in before
         // the first sync publishes them.
         try { deployEngine.backfillSlugs() } catch (e: Exception) { }
+        // Add-on reconciliation: the registry and the shared
+        // links are brought back into agreement, and the owner's
+        // console tool is refreshed, on every start. A registry
+        // changed from the console while the app was down heals
+        // here with no human step. Never gates the start.
+        try { addons.reconcile() } catch (e: Exception) { }
         supervisor.restoreAll()
         // The tunnel token is baked into the build from the CI secret.
         // No Settings entry exists and none is needed.

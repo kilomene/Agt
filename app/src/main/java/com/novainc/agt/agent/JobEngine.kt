@@ -8,6 +8,8 @@ import com.novainc.agt.core.AgtSettings
 import com.novainc.agt.core.AgtStore
 import com.novainc.agt.core.NotifyKind
 import com.novainc.agt.core.JobFeedEntry
+import com.novainc.agt.addons.AddonManifest
+import com.novainc.agt.addons.AddonStore
 import com.novainc.agt.deploy.DeploymentEngine
 import com.novainc.agt.deploy.Templates
 import com.novainc.agt.legs.SupabaseLeg
@@ -41,7 +43,8 @@ class JobEngine(
     private val supervisor: ProcessSupervisor,
     private val deployEngine: DeploymentEngine,
     private val identity: DeviceIdentity,
-    private val vault: VaultStore
+    private val vault: VaultStore,
+    private val addons: AddonStore
 ) {
     private val gson = Gson()
     private var loop: Job? = null
@@ -441,6 +444,58 @@ class JobEngine(
                     addProperty("name", name)
                 }
             }
+            "addon_list" -> {
+                // The public list: ANY verified agent may read
+                // what is installed. The registry is a shared
+                // space by the owner's order: listing is open to
+                // everyone admitted, installing is not (see
+                // addon_install). The result is the registry
+                // itself, so any agent asked "what is installed"
+                // answers with the same list Phoenix would give.
+                val arr = com.google.gson.JsonArray()
+                for (inst in addons.list()) arr.add(AddonManifest.installedToJson(inst))
+                JsonObject().apply { add("addons", arr) }
+            }
+            "addon_install" -> {
+                // Installing an add-on is the main agent's act
+                // alone, at the same trust level as agent_add:
+                // an admitted agent can use every add-on on the
+                // phone and can never put one there. The payload
+                // carries the package url and its sha256 pin; the
+                // signature over that payload is what makes the
+                // pin trustworthy.
+                if (AgentTrust.storedRole(signer) != AgentKey.ROLE_MAIN) {
+                    return fail("addon_install requires the main agent")
+                }
+                val url = payload.get("url")?.asString ?: return fail("url missing")
+                val sha = payload.get("sha256")?.asString ?: return fail("sha256 missing")
+                try {
+                    val installed = addons.installFromUrl(
+                        url, sha, AgentTrust.agentIdOf(signer)
+                    )
+                    JsonObject().apply {
+                        addProperty("installed", true)
+                        addProperty("id", installed.manifest.id)
+                        addProperty("name", installed.manifest.name)
+                        addProperty("version", installed.manifest.version)
+                    }
+                } catch (e: Exception) {
+                    fail(e.message ?: "add-on install failed")
+                }
+            }
+            "addon_remove" -> {
+                // Same gate as addon_install: removal is the main
+                // agent's act alone.
+                if (AgentTrust.storedRole(signer) != AgentKey.ROLE_MAIN) {
+                    return fail("addon_remove requires the main agent")
+                }
+                val id = payload.get("id")?.asString ?: return fail("id missing")
+                if (!addons.remove(id)) return fail("no such add-on")
+                JsonObject().apply {
+                    addProperty("removed", true)
+                    addProperty("id", id)
+                }
+            }
             else -> fail("unknown job kind $kind")
         }
     }
@@ -460,6 +515,9 @@ class JobEngine(
             "secret_set" -> "secret stored"
             "secret_list" -> "secret names listed"
             "secret_delete" -> "secret deleted"
+            "addon_list" -> "add-ons listed"
+            "addon_install" -> "add-on installed: ${result.get("id")?.asString ?: ""}"
+            "addon_remove" -> "add-on removed"
             else -> kind
         }
     }
